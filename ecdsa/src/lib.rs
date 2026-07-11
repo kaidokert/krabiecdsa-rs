@@ -2,11 +2,11 @@
 
 //! ECDSA signature verification on `modmath`, over short-Weierstrass
 //! curves. NIST P-256 ([`p256`]) ships first; secp256k1 and P-384
-//! follow in subsequent PRs.
+//! are planned.
 //!
 //! `no_std`, no-alloc, verify-only, generic over the bigint backend:
 //! any type satisfying [`UnsignedModularInt`] (a blanket-implemented
-//! bound bundle, same arrangement as ed25519's) and at least as wide
+//! bound bundle) and at least as wide
 //! as the curve can carry the arithmetic. This crate names no
 //! backend — the consumer brings one (a 256-bit type for P-256 /
 //! secp256k1, 384-bit for P-384; narrower fails the build):
@@ -37,9 +37,9 @@ pub use const_num_traits;
 pub use modmath;
 
 /// Bound bundle for the generic bigint backend the verifiers build
-/// on. Pure marker trait — no methods, just a named alias for the
-/// supertrait union, blanket-implemented for every conforming type
-/// (same arrangement as ed25519's `UnsignedModularInt`). Any bigint
+/// on. Marker trait, blanket-implemented for every conforming type
+/// (same arrangement as ed25519's `UnsignedModularInt`) — do not
+/// implement it manually. Any bigint
 /// implementing the `modmath` + `const-num-traits` surface qualifies
 /// automatically (use this crate's re-exports of both so the trait
 /// identities unify).
@@ -122,7 +122,7 @@ fn from_be<T: UnsignedModularInt>(bytes: &[u8]) -> T {
 ///   exactly `N` with **cofactor 1** (no subgroup check is performed).
 /// - `A` and `B` are already reduced mod `P`.
 ///
-/// The three shipped curves satisfy all of this; a downstream impl
+/// The curves shipped by this crate satisfy all of this; a downstream impl
 /// (e.g. P-521) is asserting it.
 pub trait Curve {
     /// Field-element / scalar width in bytes (e.g. 32 or 48).
@@ -526,9 +526,8 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
 
     // Both moduli are odd curve constants; `None` is unreachable but
     // maps to a clean reject rather than a panic path.
-    let (fp, fn_) = match (FieldNct::new(p), FieldNct::new(n)) {
-        (Some(fp), Some(fn_)) => (fp, fn_),
-        _ => return false,
+    let (Some(fp), Some(fn_)) = (FieldNct::new(p), FieldNct::new(n)) else {
+        return false;
     };
 
     let a_res = fp.reduce(&from_be::<T>(C::A));
@@ -546,9 +545,8 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
 
     let e = fn_.reduce(&hash_to_scalar(digest, bitlen_be(C::N)));
     let s_res = fn_.reduce(&s_int);
-    let s_inv = match fn_.inv_fermat(&s_res) {
-        Some(v) => v,
-        None => return false,
+    let Some(s_inv) = fn_.inv_fermat(&s_res) else {
+        return false;
     };
     let r_res = fn_.reduce(&r_int);
     let u1 = fn_.into_raw(&fn_.mul(&e, &s_inv));
@@ -561,12 +559,10 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
     };
     let rp = double_scalar_mul(&fp, &a_res, eb * 8, &u1, &g, &u2, &q);
 
-    // R == identity → reject; otherwise r ≟ R.x mod n (for all three
-    // curves p < 2n, and reduce() lands both sides in canonical
-    // mod-n form).
-    let x_affine = match to_affine_x(&fp, &rp) {
-        Some(x) => x,
-        None => return false,
+    // R == identity → reject; otherwise r ≟ R.x mod n (reduce()
+    // lands both sides in canonical mod-n form).
+    let Some(x_affine) = to_affine_x(&fp, &rp) else {
+        return false;
     };
     fn_.reduce(&x_affine) == r_res
 }

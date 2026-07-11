@@ -17,8 +17,8 @@ struct Vector {
 }
 
 /// The standard accept/reject battery, generic over curve and
-/// backend. Every case from the PRD's verify-path mitigation list
-/// that can be exercised without curve-specific data lives here.
+/// backend: every verify-path rejection case that can be exercised
+/// without curve-specific data lives here.
 fn suite<C: Curve, T: UnsignedModularInt>(v: &Vector) {
     let ok = verify_for_curve::<C, T>(v.pubkey, v.digest, v.r, v.s);
     assert!(ok, "known-good vector must verify");
@@ -84,7 +84,7 @@ fn suite<C: Curve, T: UnsignedModularInt>(v: &Vector) {
     assert!(!verify_for_curve::<C, T>(v.pubkey, v.digest, v.r, &[]));
 }
 
-/// M0/M1 sanity: G is on the curve, 2G matches an independently
+/// Point-arithmetic sanity: G is on the curve, 2G matches an independently
 /// computed reference, and the exceptional cases (P+P dispatch,
 /// P+(−P) = O) behave.
 fn point_arithmetic_suite<C: Curve, T: UnsignedModularInt + core::fmt::Debug>(
