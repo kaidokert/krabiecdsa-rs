@@ -3,7 +3,12 @@ name = "krabiecdsa"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.87"
-description = "ECDSA signature verification for embedded / no_std targets"
+description = "ECDSA signature verification — no_std, no-alloc, generic over the bigint backend via modmath"
 license = "Apache-2.0"
 
 [dependencies]
+modmath = "0.5"
+const-num-traits = { version = "0.2", default-features = false }
+
+[dev-dependencies]
+fixed-bigint = { version = "0.5", default-features = false, features = ["cios"] }
