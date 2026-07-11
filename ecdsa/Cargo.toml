@@ -1,0 +1,9 @@
+[package]
+name = "krabiecdsa"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+description = "ECDSA signature verification for embedded / no_std targets"
+license = "Apache-2.0"
+
+[dependencies]
