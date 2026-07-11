@@ -3,7 +3,7 @@ name = "krabiecdsa"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.87"
-description = "ECDSA signature verification — no_std, no-alloc, generic over the bigint backend via modmath"
+description = "ECDSA signature verification for P-256, secp256k1, and P-384 — no_std, no-alloc, generic over the bigint backend via modmath"
 license = "Apache-2.0"
 
 [dependencies]
