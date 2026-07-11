@@ -22,8 +22,10 @@ repos:
     -   id: cargo-check
         name: Cargo-check for krabiecdsa
         files: ^ecdsa/
+        types: [file]
         args: ['--manifest-path=ecdsa/Cargo.toml']
     -   id: clippy
         name: Clippy for krabiecdsa
         files: ^ecdsa/
+        types: [file]
         args: ['--manifest-path=ecdsa/Cargo.toml', '--', '-D', 'warnings']
