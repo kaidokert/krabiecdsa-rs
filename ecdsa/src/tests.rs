@@ -401,8 +401,20 @@ mod p384_tests {
         // A 32-byte digest against P-384 exercises the "hash shorter
         // than n" branch of the hash-to-scalar rule. Not a real
         // TLS shape (secp384r1 pairs with SHA-384) — this pins the
-        // zero-extension semantics, so a wrong digest must reject
-        // without tripping any length assumption.
+        // zero-extension semantics on both sides: a genuine openssl
+        // signature over a SHA-256 digest must verify, and a wrong
+        // short digest must reject without tripping any length
+        // assumption.
+        let digest: [u8; 32] =
+            hx("20c7adb1e429d0201d387b65edc420084ee4c21125bc2ce099125da552630f94");
+        let r: [u8; 48] = hx(
+            "1e6466e22054efc9778ff3278b53381c8c4d51485e94377d76efe6e634b0d6db7408ea38ffcb4335dd9bf23fb14c0383",
+        );
+        let s: [u8; 48] = hx(
+            "8787bcc7ddb710eabf99ece127a33ca687f0856e54c21ca6cfa1d2357d583b02f3cbf7b1a759c618b860a8208233b014",
+        );
+        assert!(verify_for_curve::<P384, U384>(&PUB, &digest, &r, &s));
+
         let short = [0xabu8; 32];
         assert!(!verify_for_curve::<P384, U384>(&PUB, &short, &R, &S));
     }
