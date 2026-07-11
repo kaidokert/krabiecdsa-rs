@@ -82,6 +82,9 @@ fn suite<C: Curve, T: UnsignedModularInt>(v: &Vector) {
         v.s
     ));
     assert!(!verify_for_curve::<C, T>(v.pubkey, v.digest, v.r, &[]));
+
+    // empty digest is API misuse, rejected before any math
+    assert!(!verify_for_curve::<C, T>(v.pubkey, &[], v.r, v.s));
 }
 
 /// Point-arithmetic sanity: G is on the curve, 2G matches an independently

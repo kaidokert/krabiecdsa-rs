@@ -98,9 +98,10 @@ impl<T> UnsignedModularInt for T where
 /// `FromByteSlice::from_be_slice` zero-extends short input and rejects
 /// empty or wider-than-`T` input. Every call site in this crate feeds
 /// it at most `ELEM_BYTES ≤ size_of::<T>()` bytes (compile-time
-/// guard in [`verify_for_curve`]), so the `Err` branch is structurally
-/// unreachable except for a zero-length digest; mapping it to zero
-/// avoids linking a panic path and at worst makes verification fail.
+/// guard in [`verify_for_curve`]) and never an empty slice (empty
+/// digests are rejected at the input gate), so the `Err` branch is
+/// structurally unreachable; mapping it to zero rather than
+/// unwrapping avoids linking a panic path.
 fn from_be<T: UnsignedModularInt>(bytes: &[u8]) -> T {
     T::from_be_slice(bytes).unwrap_or_else(|_| T::zero())
 }
@@ -466,8 +467,9 @@ fn hash_to_scalar<T: UnsignedModularInt>(digest: &[u8], n_bits: usize) -> T {
 /// `pubkey` is SEC1 uncompressed (`0x04 || X || Y`); `r` and `s` are
 /// the unpacked big-endian signature halves, `C::ELEM_BYTES` each
 /// (DER decoding is the caller's job). `digest` is the message hash
-/// — pass the hash, never the raw message. Any digest length is
-/// accepted, mapped to a scalar by the standard ECDSA rule
+/// — pass the hash, never the raw message. An empty digest is
+/// rejected; any non-empty length is accepted, mapped to a scalar by
+/// the standard ECDSA rule
 /// (FIPS 186-4 §6.4 / SEC1 §4.1.4): the leftmost
 /// `min(bitlen(digest), bitlen(n))` bits, so a digest longer than
 /// `n` is truncated and a shorter one zero-extends on the left.
@@ -506,6 +508,11 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
     }
     let eb = C::ELEM_BYTES;
     if pubkey.len() != 1 + 2 * eb || pubkey[0] != 0x04 || r.len() != eb || s.len() != eb {
+        return false;
+    }
+    // An empty digest is always API misuse (the argument is a hash);
+    // reject it outright rather than letting it map to e = 0.
+    if digest.is_empty() {
         return false;
     }
     let p = from_be::<T>(C::P);
