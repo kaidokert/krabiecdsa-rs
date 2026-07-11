@@ -1,21 +1,575 @@
 #![cfg_attr(not(test), no_std)]
 
-//! ECDSA signature verification, `no_std` and no-alloc.
+//! ECDSA signature verification on `modmath`, over short-Weierstrass
+//! curves. NIST P-256 ([`p256`]) ships first; secp256k1 and P-384
+//! follow in subsequent PRs.
 //!
-//! Scaffold only — the verifier lands in subsequent PRs.
+//! `no_std`, no-alloc, verify-only, generic over the bigint backend:
+//! any type satisfying [`UnsignedModularInt`] (a blanket-implemented
+//! bound bundle, same arrangement as ed25519's) and at least as wide
+//! as the curve can carry the arithmetic. This crate names no
+//! backend — the consumer brings one (a 256-bit type for P-256 /
+//! secp256k1, 384-bit for P-384; narrower fails the build):
+//!
+//! ```
+//! use krabiecdsa::p256;
+//! # type Backend = fixed_bigint::FixedUInt<u32, 8>; // dev-dependency backend for this doctest
+//!
+//! let pubkey = [4u8; 65]; // SEC1 uncompressed: 0x04 || X || Y
+//! let digest = [0u8; 32]; // SHA-256 of the message
+//! let (r, s) = ([1u8; 32], [1u8; 32]);
+//! assert!(!p256::verify_prehashed::<Backend>(&pubkey, &digest, &r, &s));
+//! ```
+//!
+//! The verifiers take an unpacked `(r, s)` pair — DER decoding
+//! belongs to the certificate layer. Verify operates on public data,
+//! so the arithmetic uses the variable-time (`Nct`) modmath surface
+//! throughout.
 
-/// Placeholder so the crate has something to build and test until
-/// the real API lands.
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+use modmath::{FieldNct, ResidueNct};
+
+// [`UnsignedModularInt`]'s supertraits are spelled in these crates'
+// vocabularies, which makes their versions part of this crate's public
+// contract. Re-exported so a downstream backend implementor names
+// exactly the copies krabiecdsa was built against instead of adding
+// separately-versioned dependencies that may fail to unify.
+pub use const_num_traits;
+pub use modmath;
+
+/// Bound bundle for the generic bigint backend the verifiers build
+/// on. Pure marker trait — no methods, just a named alias for the
+/// supertrait union, blanket-implemented for every conforming type
+/// (same arrangement as ed25519's `UnsignedModularInt`). Any bigint
+/// implementing the `modmath` + `const-num-traits` surface qualifies
+/// automatically (use this crate's re-exports of both so the trait
+/// identities unify).
+///
+/// The bounds are exactly what `modmath::FieldNct` needs for its
+/// Montgomery precompute, `mul`/`add`/`sub`, and Fermat inversion,
+/// plus by-value shift/mask for scalar bit extraction and fallible
+/// big-endian deserialization ([`const_num_traits::FromByteSlice`]).
+/// Backends must be **at least as wide as the curve's field prime**
+/// (256 or 384 bits); a too-narrow instantiation is rejected at
+/// compile time by [`verify_for_curve`].
+pub trait UnsignedModularInt:
+    Copy
+    + PartialEq
+    + PartialOrd
+    + const_num_traits::Zero
+    + const_num_traits::One
+    + const_num_traits::WrappingMul<Output = Self>
+    + const_num_traits::WrappingAdd<Output = Self>
+    + const_num_traits::WrappingSub<Output = Self>
+    + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
+    + const_num_traits::FromByteSlice
+    + core::ops::Shr<usize, Output = Self>
+    + core::ops::ShrAssign<usize>
+    + core::ops::BitAnd<Output = Self>
+    + modmath::Parity
+    + modmath::NonCt
+    + modmath::WideMul
+    + modmath::CiosMontMul
+{
+}
+
+impl<T> UnsignedModularInt for T where
+    T: Copy
+        + PartialEq
+        + PartialOrd
+        + const_num_traits::Zero
+        + const_num_traits::One
+        + const_num_traits::WrappingMul<Output = Self>
+        + const_num_traits::WrappingAdd<Output = Self>
+        + const_num_traits::WrappingSub<Output = Self>
+        + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
+        + const_num_traits::FromByteSlice
+        + core::ops::Shr<usize, Output = Self>
+        + core::ops::ShrAssign<usize>
+        + core::ops::BitAnd<Output = Self>
+        + modmath::Parity
+        + modmath::NonCt
+        + modmath::WideMul
+        + modmath::CiosMontMul
+{
+}
+
+/// Load big-endian bytes into `T`, failing closed.
+///
+/// `FromByteSlice::from_be_slice` zero-extends short input and rejects
+/// empty or wider-than-`T` input. Every call site in this crate feeds
+/// it at most `ELEM_BYTES ≤ size_of::<T>()` bytes (compile-time
+/// guard in [`verify_for_curve`]), so the `Err` branch is structurally
+/// unreachable except for a zero-length digest; mapping it to zero
+/// avoids linking a panic path and at worst makes verification fail.
+fn from_be<T: UnsignedModularInt>(bytes: &[u8]) -> T {
+    T::from_be_slice(bytes).unwrap_or_else(|_| T::zero())
+}
+
+/// Short-Weierstrass curve `y² = x³ + ax + b` over a prime field.
+///
+/// All constants are big-endian and exactly `ELEM_BYTES` long —
+/// [`verify_for_curve`] checks the lengths at compile time, so a
+/// mis-sized constant in a downstream `Curve` impl fails the build
+/// instead of verifying on a silently wrong curve.
+///
+/// # Implementor contract — the verifier assumes, and cannot check:
+///
+/// - `P` is an odd **prime** (field arithmetic, on-curve check).
+/// - `N` is an odd **prime** — load-bearing: `s⁻¹ mod n` uses
+///   Fermat's little theorem, so a composite `N` yields silently
+///   wrong inverses, not an error.
+/// - `(GX, GY)` lies on the curve and generates a group of order
+///   exactly `N` with **cofactor 1** (no subgroup check is performed).
+/// - `A` and `B` are already reduced mod `P`.
+///
+/// The three shipped curves satisfy all of this; a downstream impl
+/// (e.g. P-521) is asserting it.
+pub trait Curve {
+    /// Field-element / scalar width in bytes (e.g. 32 or 48).
+    const ELEM_BYTES: usize;
+    /// Field prime `p`.
+    const P: &'static [u8];
+    /// Curve coefficient `a` (reduced mod p, e.g. `p − 3`).
+    const A: &'static [u8];
+    /// Curve coefficient `b`.
+    const B: &'static [u8];
+    /// Group order `n` (prime; cofactor must be 1).
+    const N: &'static [u8];
+    /// Generator affine x.
+    const GX: &'static [u8];
+    /// Generator affine y.
+    const GY: &'static [u8];
+}
+
+/// Decode a `2·N`-char lowercase-hex string into `N` big-endian
+/// bytes. Const so the curve constants stay readable; panics at
+/// compile time on malformed input.
+const fn hx<const N: usize>(s: &str) -> [u8; N] {
+    const fn nib(c: u8) -> u8 {
+        match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            _ => panic!("bad hex digit in curve constant"),
+        }
+    }
+    let s = s.as_bytes();
+    assert!(s.len() == 2 * N);
+    let mut out = [0u8; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = nib(s[2 * i]) << 4 | nib(s[2 * i + 1]);
+        i += 1;
+    }
+    out
+}
+
+/// Stamp out a curve module: constants, marker type, `Curve` impl,
+/// and the fixed-size `verify_prehashed` wrapper. The per-curve doc
+/// comments stay at the invocation site.
+macro_rules! define_curve {
+    (
+        $(#[$mod_doc:meta])*
+        pub mod $m:ident {
+            $(#[$marker_doc:meta])*
+            marker: $marker:ident,
+            elem_bytes: $eb:expr,
+            digest_bytes: $db:expr,
+            p: $p:expr,
+            a: $a:expr,
+            b: $b:expr,
+            n: $n:expr,
+            gx: $gx:expr,
+            gy: $gy:expr,
+            $(#[$fn_doc:meta])*
+            fn verify_prehashed;
+        }
+    ) => {
+        $(#[$mod_doc])*
+        pub mod $m {
+            use super::*;
+
+            /// SEC1 uncompressed public key: `0x04 || X || Y`.
+            pub const PUBKEY_BYTES: usize = 1 + 2 * $eb;
+
+            const P_B: [u8; $eb] = hx($p);
+            const A_B: [u8; $eb] = hx($a);
+            const B_B: [u8; $eb] = hx($b);
+            const N_B: [u8; $eb] = hx($n);
+            const GX_B: [u8; $eb] = hx($gx);
+            const GY_B: [u8; $eb] = hx($gy);
+
+            $(#[$marker_doc])*
+            pub enum $marker {}
+            impl Curve for $marker {
+                const ELEM_BYTES: usize = $eb;
+                const P: &'static [u8] = &P_B;
+                const A: &'static [u8] = &A_B;
+                const B: &'static [u8] = &B_B;
+                const N: &'static [u8] = &N_B;
+                const GX: &'static [u8] = &GX_B;
+                const GY: &'static [u8] = &GY_B;
+            }
+
+            $(#[$fn_doc])*
+            #[must_use]
+            pub fn verify_prehashed<T: UnsignedModularInt>(
+                pubkey: &[u8; PUBKEY_BYTES],
+                digest: &[u8; $db],
+                r: &[u8; $eb],
+                s: &[u8; $eb],
+            ) -> bool {
+                verify_for_curve::<$marker, T>(pubkey, digest, r, s)
+            }
+        }
+    };
+}
+
+define_curve! {
+    /// NIST P-256 / secp256r1 (TLS `ecdsa_secp256r1_sha256`, X.509
+    /// `ecdsa-with-SHA256`).
+    pub mod p256 {
+        /// Curve marker for [`verify_for_curve`].
+        marker: P256,
+        elem_bytes: 32,
+        digest_bytes: 32,
+        p: "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff",
+        a: "ffffffff00000001000000000000000000000000fffffffffffffffffffffffc",
+        b: "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b",
+        n: "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551",
+        gx: "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+        gy: "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        /// Verify an ECDSA-P256 signature over a SHA-256 digest. See
+        /// [`verify_for_curve`] for the input contract.
+        ///
+        /// The digest size is fixed to the TLS 1.3 pairing (SHA-256).
+        /// X.509 allows other hash/curve pairings; for those, call
+        /// [`verify_for_curve`] directly — it implements the general
+        /// digest-truncation rule for any digest length.
+        fn verify_prehashed;
+    }
+}
+
+/// Jacobian projective point over the field `p`. The identity is
+/// encoded as `Z == 0` (X, Y then carry no information).
+#[derive(Clone)]
+struct Point<'f, T: UnsignedModularInt> {
+    x: ResidueNct<'f, T>,
+    y: ResidueNct<'f, T>,
+    z: ResidueNct<'f, T>,
+}
+
+fn infinity<T: UnsignedModularInt>(f: &FieldNct<T>) -> Point<'_, T> {
+    Point {
+        x: f.one(),
+        y: f.one(),
+        z: f.zero(),
+    }
+}
+
+fn is_infinity<T: UnsignedModularInt>(f: &FieldNct<T>, pt: &Point<'_, T>) -> bool {
+    pt.z == f.zero()
+}
+
+/// Strict `a < b` that fails closed: an incomparable pair (a broken
+/// `PartialOrd` on a third-party backend) reads as "not less", so
+/// every range check that gates on this rejects rather than accepts.
+fn lt<T: UnsignedModularInt>(a: &T, b: &T) -> bool {
+    matches!(a.partial_cmp(b), Some(core::cmp::Ordering::Less))
+}
+
+/// `y² == x³ + ax + b`, for an affine point (`z` assumed 1).
+fn is_on_curve<T: UnsignedModularInt>(
+    f: &FieldNct<T>,
+    pt: &Point<'_, T>,
+    a: &ResidueNct<'_, T>,
+    b: &ResidueNct<'_, T>,
+) -> bool {
+    let y2 = f.mul(&pt.y, &pt.y);
+    let x2 = f.mul(&pt.x, &pt.x);
+    let x3 = f.mul(&x2, &pt.x);
+    let ax = f.mul(a, &pt.x);
+    let rhs = f.add(&f.add(&x3, &ax), b);
+    y2 == rhs
+}
+
+/// Point doubling, Jacobian, general `a` (EFD dbl-2007-bl) — one
+/// formula serves both `a = −3` (P-256/P-384) and `a = 0` (secp256k1)
+/// at the cost of the `a·ZZ²` multiply a specialized version would
+/// fold away. A `y == 0` input (its double is the identity) falls out
+/// as `z3 = 2yz = 0`.
+fn double<'f, T: UnsignedModularInt>(
+    f: &'f FieldNct<T>,
+    a: &ResidueNct<'f, T>,
+    pt: &Point<'f, T>,
+) -> Point<'f, T> {
+    if is_infinity(f, pt) {
+        return infinity(f);
+    }
+    let xx = f.mul(&pt.x, &pt.x);
+    let yy = f.mul(&pt.y, &pt.y);
+    let yyyy = f.mul(&yy, &yy);
+    let zz = f.mul(&pt.z, &pt.z);
+
+    // S = 2·((X+YY)² − XX − YYYY)
+    let x_plus_yy = f.add(&pt.x, &yy);
+    let t = f.sub(&f.sub(&f.mul(&x_plus_yy, &x_plus_yy), &xx), &yyyy);
+    let s = f.add(&t, &t);
+
+    // M = 3·XX + a·ZZ²
+    let xx3 = f.add(&f.add(&xx, &xx), &xx);
+    let m = f.add(&xx3, &f.mul(a, &f.mul(&zz, &zz)));
+
+    // X3 = M² − 2S
+    let x3 = f.sub(&f.sub(&f.mul(&m, &m), &s), &s);
+
+    // Y3 = M·(S − X3) − 8·YYYY
+    let yyyy8 = {
+        let y2_ = f.add(&yyyy, &yyyy);
+        let y4 = f.add(&y2_, &y2_);
+        f.add(&y4, &y4)
+    };
+    let y3 = f.sub(&f.mul(&m, &f.sub(&s, &x3)), &yyyy8);
+
+    // Z3 = (Y+Z)² − YY − ZZ
+    let yz = f.add(&pt.y, &pt.z);
+    let z3 = f.sub(&f.sub(&f.mul(&yz, &yz), &yy), &zz);
+
+    Point {
+        x: x3,
+        y: y3,
+        z: z3,
+    }
+}
+
+/// General Jacobian addition (EFD add-2007-bl), with the short-
+/// Weierstrass exceptional cases handled explicitly: identity
+/// operands, `P + P` (dispatches to [`double`]), and `P + (−P) = O`.
+fn add<'f, T: UnsignedModularInt>(
+    f: &'f FieldNct<T>,
+    curve_a: &ResidueNct<'f, T>,
+    a: &Point<'f, T>,
+    b: &Point<'f, T>,
+) -> Point<'f, T> {
+    if is_infinity(f, a) {
+        return b.clone();
+    }
+    if is_infinity(f, b) {
+        return a.clone();
+    }
+    let z1z1 = f.mul(&a.z, &a.z);
+    let z2z2 = f.mul(&b.z, &b.z);
+    let u1 = f.mul(&a.x, &z2z2);
+    let u2 = f.mul(&b.x, &z1z1);
+    let s1 = f.mul(&f.mul(&a.y, &b.z), &z2z2);
+    let s2 = f.mul(&f.mul(&b.y, &a.z), &z1z1);
+    let h = f.sub(&u2, &u1);
+    let sd = f.sub(&s2, &s1);
+    if h == f.zero() {
+        return if sd == f.zero() {
+            double(f, curve_a, a)
+        } else {
+            infinity(f)
+        };
+    }
+    let h2 = f.add(&h, &h);
+    let i = f.mul(&h2, &h2);
+    let j = f.mul(&h, &i);
+    let rr = f.add(&sd, &sd);
+    let v = f.mul(&u1, &i);
+
+    let x3 = f.sub(&f.sub(&f.mul(&rr, &rr), &j), &f.add(&v, &v));
+    let s1j = f.mul(&s1, &j);
+    let y3 = f.sub(&f.mul(&rr, &f.sub(&v, &x3)), &f.add(&s1j, &s1j));
+    let z12 = f.add(&a.z, &b.z);
+    let z3 = f.mul(&f.sub(&f.sub(&f.mul(&z12, &z12), &z1z1), &z2z2), &h);
+
+    Point {
+        x: x3,
+        y: y3,
+        z: z3,
+    }
+}
+
+fn bit<T: UnsignedModularInt>(v: &T, i: usize) -> bool {
+    (*v >> i) & T::one() != T::zero()
+}
+
+/// `u1·G + u2·Q` via Shamir's trick: one shared double-and-add pass
+/// with a precomputed `G + Q`. Variable-time — both scalars are
+/// public on the verify path. Both scalars are `< n < 2^bits`, so
+/// `bits` iterations cover them regardless of the backend's width.
+fn double_scalar_mul<'f, T: UnsignedModularInt>(
+    f: &'f FieldNct<T>,
+    curve_a: &ResidueNct<'f, T>,
+    bits: usize,
+    u1: &T,
+    g: &Point<'f, T>,
+    u2: &T,
+    q: &Point<'f, T>,
+) -> Point<'f, T> {
+    let gq = add(f, curve_a, g, q);
+    let mut acc = infinity(f);
+    for i in (0..bits).rev() {
+        acc = double(f, curve_a, &acc);
+        match (bit(u1, i), bit(u2, i)) {
+            (true, true) => acc = add(f, curve_a, &acc, &gq),
+            (true, false) => acc = add(f, curve_a, &acc, g),
+            (false, true) => acc = add(f, curve_a, &acc, q),
+            (false, false) => {}
+        }
+    }
+    acc
+}
+
+/// Affine x-coordinate `X/Z²`, or `None` for the identity.
+fn to_affine_x<T: UnsignedModularInt>(f: &FieldNct<T>, pt: &Point<'_, T>) -> Option<T> {
+    let zinv = f.inv_fermat(&pt.z)?;
+    let zinv2 = f.mul(&zinv, &zinv);
+    Some(f.into_raw(&f.mul(&pt.x, &zinv2)))
+}
+
+/// Number of significant bits in a big-endian byte string.
+fn bitlen_be(bytes: &[u8]) -> usize {
+    let mut i = 0;
+    while i < bytes.len() && bytes[i] == 0 {
+        i += 1;
+    }
+    if i == bytes.len() {
+        return 0;
+    }
+    (bytes.len() - i) * 8 - bytes[i].leading_zeros() as usize
+}
+
+/// The ECDSA hash-to-scalar rule (FIPS 186-4 §6.4 / SEC1 §4.1.4):
+/// `e` is the integer formed by the **leftmost `min(bitlen(digest),
+/// n_bits)` bits** of the digest. A digest no longer than `n` is used
+/// whole (zero-extending on the left); a longer one is truncated to
+/// its leading `n_bits` bits — whole bytes first, then a right shift
+/// for the sub-byte remainder when `n_bits` is not a multiple of 8
+/// (all shipped curves are byte-aligned, so their shift is 0, but the
+/// rule is encoded in full for downstream `Curve` impls).
+fn hash_to_scalar<T: UnsignedModularInt>(digest: &[u8], n_bits: usize) -> T {
+    if digest.len() * 8 <= n_bits {
+        return from_be::<T>(digest);
+    }
+    let nb = n_bits.div_ceil(8);
+    let mut e = from_be::<T>(&digest[..nb]);
+    let excess = nb * 8 - n_bits;
+    if excess > 0 {
+        e >>= excess;
+    }
+    e
+}
+
+/// Verify an ECDSA signature over curve `C` with backend `T`.
+///
+/// `pubkey` is SEC1 uncompressed (`0x04 || X || Y`); `r` and `s` are
+/// the unpacked big-endian signature halves, `C::ELEM_BYTES` each
+/// (DER decoding is the caller's job). `digest` is the message hash
+/// — pass the hash, never the raw message. Any digest length is
+/// accepted, mapped to a scalar by the standard ECDSA rule
+/// (FIPS 186-4 §6.4 / SEC1 §4.1.4): the leftmost
+/// `min(bitlen(digest), bitlen(n))` bits, so a digest longer than
+/// `n` is truncated and a shorter one zero-extends on the left.
+/// Returns `false` on any malformed
+/// input — wrong lengths or point prefix, coordinates ≥ p, off-curve
+/// point, `r`/`s` outside `[1, n−1]` — and never panics.
+///
+/// A backend narrower than `C::ELEM_BYTES` or a `Curve` impl whose
+/// constants are not `ELEM_BYTES` long is rejected at compile time
+/// (post-monomorphization error).
+///
+/// High-`s` signatures are accepted: `(r, n−s)` verifying alongside
+/// `(r, s)` is inherent ECDSA malleability and TLS does not require
+/// low-`s`.
+#[must_use]
+pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
+    pubkey: &[u8],
+    digest: &[u8],
+    r: &[u8],
+    s: &[u8],
+) -> bool {
+    const {
+        assert!(
+            core::mem::size_of::<T>() >= C::ELEM_BYTES,
+            "backend type narrower than the curve's field element"
+        );
+        assert!(
+            C::P.len() == C::ELEM_BYTES
+                && C::A.len() == C::ELEM_BYTES
+                && C::B.len() == C::ELEM_BYTES
+                && C::N.len() == C::ELEM_BYTES
+                && C::GX.len() == C::ELEM_BYTES
+                && C::GY.len() == C::ELEM_BYTES,
+            "Curve constants must all be exactly ELEM_BYTES long"
+        );
+    }
+    let eb = C::ELEM_BYTES;
+    if pubkey.len() != 1 + 2 * eb || pubkey[0] != 0x04 || r.len() != eb || s.len() != eb {
+        return false;
+    }
+    let p = from_be::<T>(C::P);
+    let n = from_be::<T>(C::N);
+    let zero = T::zero();
+
+    let qx = from_be::<T>(&pubkey[1..1 + eb]);
+    let qy = from_be::<T>(&pubkey[1 + eb..1 + 2 * eb]);
+    if !(lt(&qx, &p) && lt(&qy, &p)) {
+        return false;
+    }
+
+    let r_int = from_be::<T>(r);
+    let s_int = from_be::<T>(s);
+    if r_int == zero || !lt(&r_int, &n) || s_int == zero || !lt(&s_int, &n) {
+        return false;
+    }
+
+    // Both moduli are odd curve constants; `None` is unreachable but
+    // maps to a clean reject rather than a panic path.
+    let (fp, fn_) = match (FieldNct::new(p), FieldNct::new(n)) {
+        (Some(fp), Some(fn_)) => (fp, fn_),
+        _ => return false,
+    };
+
+    let a_res = fp.reduce(&from_be::<T>(C::A));
+    let b_res = fp.reduce(&from_be::<T>(C::B));
+    let q = Point {
+        x: fp.reduce(&qx),
+        y: fp.reduce(&qy),
+        z: fp.one(),
+    };
+    // SEC1-uncompressed can't encode the identity, so on-curve is the
+    // whole point-validation story (cofactor 1: no subgroup check).
+    if !is_on_curve(&fp, &q, &a_res, &b_res) {
+        return false;
+    }
+
+    let e = fn_.reduce(&hash_to_scalar(digest, bitlen_be(C::N)));
+    let s_res = fn_.reduce(&s_int);
+    let s_inv = match fn_.inv_fermat(&s_res) {
+        Some(v) => v,
+        None => return false,
+    };
+    let r_res = fn_.reduce(&r_int);
+    let u1 = fn_.into_raw(&fn_.mul(&e, &s_inv));
+    let u2 = fn_.into_raw(&fn_.mul(&r_res, &s_inv));
+
+    let g = Point {
+        x: fp.reduce(&from_be::<T>(C::GX)),
+        y: fp.reduce(&from_be::<T>(C::GY)),
+        z: fp.one(),
+    };
+    let rp = double_scalar_mul(&fp, &a_res, eb * 8, &u1, &g, &u2, &q);
+
+    // R == identity → reject; otherwise r ≟ R.x mod n (for all three
+    // curves p < 2n, and reduce() lands both sides in canonical
+    // mod-n form).
+    let x_affine = match to_affine_x(&fp, &rp) {
+        Some(x) => x,
+        None => return false,
+    };
+    fn_.reduce(&x_affine) == r_res
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        assert_eq!(add(2, 2), 4);
-    }
-}
+mod tests;
