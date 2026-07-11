@@ -11,3 +11,19 @@ repos:
     -   id: check-toml
     -   id: mixed-line-ending
         args: ["--fix=lf"]
+
+-   repo: https://github.com/doublify/pre-commit-rust
+    rev: v1.0
+    hooks:
+    -   id: fmt
+        name: Fmt for krabiecdsa
+        files: ^ecdsa/
+        args: ['--manifest-path=ecdsa/Cargo.toml', '--']
+    -   id: cargo-check
+        name: Cargo-check for krabiecdsa
+        files: ^ecdsa/
+        args: ['--manifest-path=ecdsa/Cargo.toml']
+    -   id: clippy
+        name: Clippy for krabiecdsa
+        files: ^ecdsa/
+        args: ['--manifest-path=ecdsa/Cargo.toml', '--', '-D', 'warnings']
