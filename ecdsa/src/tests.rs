@@ -3,6 +3,7 @@ use fixed_bigint::FixedUInt;
 use modmath::FieldNct;
 
 type U256 = FixedUInt<u32, 8>;
+type U384 = FixedUInt<u32, 12>;
 // Oversized backend: proves the verifier is width-agnostic.
 type U512 = FixedUInt<u32, 16>;
 
@@ -139,6 +140,7 @@ fn bitlen_be_counts_leading_zeros() {
     assert_eq!(bitlen_be(&[0x01]), 1);
     assert_eq!(bitlen_be(&[0x00, 0x80, 0x00]), 16);
     assert_eq!(bitlen_be(p256::P256::N), 256);
+    assert_eq!(bitlen_be(p384::P384::N), 384);
 }
 
 #[test]
@@ -280,5 +282,127 @@ mod p256_tests {
     fn fixed_size_wrapper() {
         assert_eq!(PUB.len(), PUBKEY_BYTES);
         assert!(crate::p256::verify_prehashed::<U256>(&PUB, &DIGEST, &R, &S));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// secp256k1. OpenSSL 3.6.1 vector, SHA-256 digest of
+// "krabiecdsa k256 test message"; `s` is high as emitted.
+// ---------------------------------------------------------------------------
+
+mod k256_tests {
+    use super::*;
+    use crate::k256::K256;
+
+    const PUB: [u8; 65] = hx(
+        "0403a6c551585c95166062778491a3319bcbd2956d942dec2e2f878bd7ac6efa047ca6f4e79dc69f06f9e06981f0e8b4975f629870b2cda540d276f8b06a1b2e83",
+    );
+    const DIGEST: [u8; 32] = hx("a137c17d34fc71a7d9150651cdb6321bb96d28e2828d463259b28ac0d2ca050c");
+    const R: [u8; 32] = hx("cf510678d4d795fc50852f849779cdfb69302e9c7b188dee7839d55bbabe0165");
+    const S: [u8; 32] = hx("ade734ea3003e3985e47a93e6a231fed499438b296a42ba670025c3ef923d2e1");
+    const N_MINUS_S: [u8; 32] =
+        hx("5218cb15cffc1c67a1b856c195dce011711aa43418a474954fd0024dd7126e60");
+
+    const VEC: Vector = Vector {
+        pubkey: &PUB,
+        digest: &DIGEST,
+        r: &R,
+        s: &S,
+        n_minus_s: &N_MINUS_S,
+    };
+
+    #[test]
+    fn full_suite() {
+        suite::<K256, U256>(&VEC);
+    }
+
+    #[test]
+    fn oversized_backend() {
+        suite::<K256, U512>(&VEC);
+    }
+
+    #[test]
+    fn point_arithmetic() {
+        point_arithmetic_suite::<K256, U256>(
+            &hx::<32>("c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"),
+            &hx::<32>("1ae168fea63dc339a3c58419466ceaeef7f632653266d0e1236431a950cfe52a"),
+        );
+    }
+
+    #[test]
+    fn fixed_size_wrapper() {
+        assert!(crate::k256::verify_prehashed::<U256>(&PUB, &DIGEST, &R, &S));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P-384. OpenSSL 3.6.1 vector, SHA-384 digest of
+// "krabiecdsa p384 test message"; `s` is high as emitted.
+// ---------------------------------------------------------------------------
+
+mod p384_tests {
+    use super::*;
+    use crate::p384::P384;
+
+    const PUB: [u8; 97] = hx(
+        "04b7af0877010232acdb95e67449f029079a8753201e80eb3cf2b5c3621e7b9698f6ccf5d26a2b101be9f360e12c51335a6e9cf458d078ae755ffa9ed0505c402650ba6b7928ef32e99f16c6057e34bf9a6d6a0dd7bcb64d3046a53e355299c5d6",
+    );
+    const DIGEST: [u8; 48] = hx(
+        "bb798affdd2ef9ceb595f4852d6fb58dd756b3e65569a7df6a10f3267ce83d1fd055cfe1c6ffd73ebfce2d05a00d455c",
+    );
+    const R: [u8; 48] = hx(
+        "41ef41fcc68bdfbd99c7f1358973d2471f11826f71feba38ec257244cb86c9352559c05700636bb27b5a710ea531dd19",
+    );
+    const S: [u8; 48] = hx(
+        "b048269bb0603d5d53ff921448458975c3884a39827d971be315e7549e2f1f3fbfe3c7fad90f357bc8b4f43040f8081a",
+    );
+    const N_MINUS_S: [u8; 48] = hx(
+        "4fb7d9644f9fc2a2ac006debb7ba768a3c77b5c67d8268e3e44d662d56080e9f983645b76fa171ff2437253a8bcd2159",
+    );
+
+    const VEC: Vector = Vector {
+        pubkey: &PUB,
+        digest: &DIGEST,
+        r: &R,
+        s: &S,
+        n_minus_s: &N_MINUS_S,
+    };
+
+    #[test]
+    fn full_suite() {
+        suite::<P384, U384>(&VEC);
+    }
+
+    #[test]
+    fn oversized_backend() {
+        suite::<P384, U512>(&VEC);
+    }
+
+    #[test]
+    fn point_arithmetic() {
+        point_arithmetic_suite::<P384, U384>(
+            &hx::<48>(
+                "08d999057ba3d2d969260045c55b97f089025959a6f434d651d207d19fb96e9e4fe0e86ebe0e64f85b96a9c75295df61",
+            ),
+            &hx::<48>(
+                "8e80f1fa5b1b3cedb7bfe8dffd6dba74b275d875bc6cc43e904e505f256ab4255ffd43e94d39e22d61501e700a940e80",
+            ),
+        );
+    }
+
+    #[test]
+    fn fixed_size_wrapper() {
+        assert!(crate::p384::verify_prehashed::<U384>(&PUB, &DIGEST, &R, &S));
+    }
+
+    #[test]
+    fn short_digest_zero_extends() {
+        // A 32-byte digest against P-384 exercises the "hash shorter
+        // than n" branch of the hash-to-scalar rule. Not a real
+        // TLS shape (secp384r1 pairs with SHA-384) — this pins the
+        // zero-extension semantics, so a wrong digest must reject
+        // without tripping any length assumption.
+        let short = [0xabu8; 32];
+        assert!(!verify_for_curve::<P384, U384>(&PUB, &short, &R, &S));
     }
 }

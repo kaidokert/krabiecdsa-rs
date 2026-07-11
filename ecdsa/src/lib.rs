@@ -1,8 +1,8 @@
 #![cfg_attr(not(test), no_std)]
 
 //! ECDSA signature verification on `modmath`, over short-Weierstrass
-//! curves. NIST P-256 ([`p256`]) ships first; secp256k1 and P-384
-//! are planned.
+//! curves: NIST P-256 ([`p256`]), secp256k1 ([`k256`]), and NIST
+//! P-384 ([`p384`]).
 //!
 //! `no_std`, no-alloc, verify-only, generic over the bigint backend:
 //! any type satisfying [`UnsignedModularInt`] (a blanket-implemented
@@ -244,6 +244,57 @@ define_curve! {
         ///
         /// The digest size is fixed to the TLS 1.3 pairing (SHA-256).
         /// X.509 allows other hash/curve pairings; for those, call
+        /// [`verify_for_curve`] directly — it implements the general
+        /// digest-truncation rule for any digest length.
+        fn verify_prehashed;
+    }
+}
+
+define_curve! {
+    /// secp256k1 (Bitcoin/Ethereum's curve; `a = 0`).
+    pub mod k256 {
+        /// Curve marker for [`verify_for_curve`].
+        marker: K256,
+        elem_bytes: 32,
+        digest_bytes: 32,
+        p: "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f",
+        a: "0000000000000000000000000000000000000000000000000000000000000000",
+        b: "0000000000000000000000000000000000000000000000000000000000000007",
+        n: "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+        gx: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        gy: "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
+        /// Verify an ECDSA-secp256k1 signature over a SHA-256 digest.
+        /// See [`verify_for_curve`] for the input contract. High-`s`
+        /// signatures are accepted — low-`s` enforcement (Bitcoin
+        /// consensus rules) is the caller's policy, not this crate's.
+        ///
+        /// For other digest lengths, call [`verify_for_curve`]
+        /// directly — it implements the general digest-truncation
+        /// rule for any digest length.
+        fn verify_prehashed;
+    }
+}
+
+define_curve! {
+    /// NIST P-384 / secp384r1 (TLS `ecdsa_secp384r1_sha384`, X.509
+    /// `ecdsa-with-SHA384`).
+    pub mod p384 {
+        /// Curve marker for [`verify_for_curve`].
+        marker: P384,
+        elem_bytes: 48,
+        digest_bytes: 48,
+        p: "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff",
+        a: "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000fffffffc",
+        b: "b3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef",
+        n: "ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973",
+        gx: "aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7",
+        gy: "3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f",
+        /// Verify an ECDSA-P384 signature over a SHA-384 digest. See
+        /// [`verify_for_curve`] for the input contract.
+        ///
+        /// The digest size is fixed to the TLS 1.3 pairing (SHA-384).
+        /// X.509 allows other hash/curve pairings (e.g. a P-384 key
+        /// with `ecdsa-with-SHA256`); for those, call
         /// [`verify_for_curve`] directly — it implements the general
         /// digest-truncation rule for any digest length.
         fn verify_prehashed;
