@@ -284,6 +284,24 @@ mod p256_tests {
         assert_eq!(PUB.len(), PUBKEY_BYTES);
         assert!(crate::p256::verify_prehashed::<U256>(&PUB, &DIGEST, &R, &S));
     }
+
+    #[test]
+    fn rustcrypto_prehash_verifier() {
+        use signature::hazmat::PrehashVerifier;
+        let key = crate::p256::VerifyingKey::<U256>::from_sec1_bytes(PUB);
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(&R);
+        sig[32..].copy_from_slice(&S);
+        assert!(key.verify_prehash(&DIGEST, &sig).is_ok());
+
+        // wrong signature length errors rather than panicking
+        assert!(key.verify_prehash(&DIGEST, &&sig[..63]).is_err());
+
+        // flipped bit fails
+        let mut bad = sig;
+        bad[0] ^= 0x01;
+        assert!(key.verify_prehash(&DIGEST, &bad).is_err());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +351,16 @@ mod k256_tests {
     #[test]
     fn fixed_size_wrapper() {
         assert!(crate::k256::verify_prehashed::<U256>(&PUB, &DIGEST, &R, &S));
+    }
+
+    #[test]
+    fn rustcrypto_prehash_verifier() {
+        use signature::hazmat::PrehashVerifier;
+        let key = crate::k256::VerifyingKey::<U256>::from_sec1_bytes(PUB);
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(&R);
+        sig[32..].copy_from_slice(&S);
+        assert!(key.verify_prehash(&DIGEST, &sig).is_ok());
     }
 }
 
@@ -394,6 +422,16 @@ mod p384_tests {
     #[test]
     fn fixed_size_wrapper() {
         assert!(crate::p384::verify_prehashed::<U384>(&PUB, &DIGEST, &R, &S));
+    }
+
+    #[test]
+    fn rustcrypto_prehash_verifier() {
+        use signature::hazmat::PrehashVerifier;
+        let key = crate::p384::VerifyingKey::<U384>::from_sec1_bytes(PUB);
+        let mut sig = [0u8; 96];
+        sig[..48].copy_from_slice(&R);
+        sig[48..].copy_from_slice(&S);
+        assert!(key.verify_prehash(&DIGEST, &sig).is_ok());
     }
 
     #[test]
