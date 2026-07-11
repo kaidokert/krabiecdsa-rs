@@ -450,7 +450,10 @@ fn bitlen_be(bytes: &[u8]) -> usize {
 /// (all shipped curves are byte-aligned, so their shift is 0, but the
 /// rule is encoded in full for downstream `Curve` impls).
 fn hash_to_scalar<T: UnsignedModularInt>(digest: &[u8], n_bits: usize) -> T {
-    if digest.len() * 8 <= n_bits {
+    // len <= n_bits/8 is the overflow-free spelling of len*8 <= n_bits
+    // (equivalent for integers): a pathological digest length must not
+    // wrap the multiplication on 32-bit targets.
+    if digest.len() <= n_bits / 8 {
         return from_be::<T>(digest);
     }
     let nb = n_bits.div_ceil(8);
