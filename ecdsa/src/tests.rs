@@ -140,6 +140,7 @@ fn bitlen_be_counts_leading_zeros() {
     assert_eq!(bitlen_be(&[0x01]), 1);
     assert_eq!(bitlen_be(&[0x00, 0x80, 0x00]), 16);
     assert_eq!(bitlen_be(p256::P256::N), 256);
+    assert_eq!(bitlen_be(k256::K256::N), 256);
     assert_eq!(bitlen_be(p384::P384::N), 384);
 }
 
