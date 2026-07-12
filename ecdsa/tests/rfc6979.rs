@@ -231,7 +231,23 @@ fn rejects_out_of_range_and_malformed() {
         &mut r,
         &mut s
     ));
+    // deterministic: wrong-length output buffers
+    assert!(!sign_prehashed::<P256, U256, Hmac<Sha256>>(
+        &d,
+        &digest,
+        &mut r[..31],
+        &mut s
+    ));
+    assert!(!sign_prehashed::<P256, U256, Hmac<Sha256>>(
+        &d,
+        &digest,
+        &mut r,
+        &mut s[..31]
+    ));
+
+    // nonce derivation: short key, empty digest, short and oversized out_k
     let mut kbuf = [0u8; 32];
+    let mut kbuf_over = [0u8; 33];
     assert!(!derive_nonce_rfc6979::<P256, U256, Hmac<Sha256>>(
         &d[..31],
         &digest,
@@ -239,7 +255,17 @@ fn rejects_out_of_range_and_malformed() {
     ));
     assert!(!derive_nonce_rfc6979::<P256, U256, Hmac<Sha256>>(
         &d,
+        &[],
+        &mut kbuf
+    ));
+    assert!(!derive_nonce_rfc6979::<P256, U256, Hmac<Sha256>>(
+        &d,
         &digest,
         &mut kbuf[..31]
+    ));
+    assert!(!derive_nonce_rfc6979::<P256, U256, Hmac<Sha256>>(
+        &d,
+        &digest,
+        &mut kbuf_over
     ));
 }

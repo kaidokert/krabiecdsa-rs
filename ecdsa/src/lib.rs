@@ -717,6 +717,7 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
 #[cfg(feature = "experimental-signing")]
 pub mod dangerous {
     use super::*;
+    use zeroize::{Zeroize, Zeroizing};
 
     /// Fixed-iteration double-and-add `scalar · base`. Variable-time
     /// (POC only — see the module warning).
@@ -890,12 +891,14 @@ pub mod dangerous {
             return None;
         }
         let eb = C::ELEM_BYTES;
-        let mut v = [0x01u8; MAX_HLEN];
-        let mut k = [0x00u8; MAX_HLEN];
+        // Secret DRBG state — wiped on every return (incl. `?`) via
+        // Zeroizing's Drop.
+        let mut v = Zeroizing::new([0x01u8; MAX_HLEN]);
+        let mut k = Zeroizing::new([0x00u8; MAX_HLEN]);
         // Scratch so no HMAC output aliases its own input: the K-update
         // key is copied here, and V-updates land here before copy-back
         // (input and output V would otherwise be the same buffer).
-        let mut scratch = [0u8; MAX_HLEN];
+        let mut scratch = Zeroizing::new([0u8; MAX_HLEN]);
 
         // V = HMAC_K(V) via scratch.
         let update_v = |k: &[u8], v: &mut [u8], scratch: &mut [u8]| -> Option<()> {
@@ -909,24 +912,24 @@ pub mod dangerous {
         hmac_into::<M>(
             &scratch[..hlen],
             &[&v[..hlen], &[0x00], x_octets, h1_octets],
-            &mut k,
+            &mut k[..],
         )?;
-        update_v(&k[..hlen], &mut v, &mut scratch)?;
+        update_v(&k[..hlen], &mut v[..], &mut scratch[..])?;
         // K = HMAC_K(V || 0x01 || x || h1); V = HMAC_K(V)
         scratch[..hlen].copy_from_slice(&k[..hlen]);
         hmac_into::<M>(
             &scratch[..hlen],
             &[&v[..hlen], &[0x01], x_octets, h1_octets],
-            &mut k,
+            &mut k[..],
         )?;
-        update_v(&k[..hlen], &mut v, &mut scratch)?;
+        update_v(&k[..hlen], &mut v[..], &mut scratch[..])?;
 
         loop {
             // T = leftmost qlen bits, accumulated hlen bytes at a time.
-            let mut t = [0u8; MAX_QLEN_BYTES];
+            let mut t = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
             let mut tlen = 0usize;
             while tlen < eb {
-                update_v(&k[..hlen], &mut v, &mut scratch)?;
+                update_v(&k[..hlen], &mut v[..], &mut scratch[..])?;
                 let take = core::cmp::min(hlen, eb - tlen);
                 t[tlen..tlen + take].copy_from_slice(&v[..take]);
                 tlen += take;
@@ -937,8 +940,8 @@ pub mod dangerous {
             }
             // Candidate out of range (astronomically rare): reseed.
             scratch[..hlen].copy_from_slice(&k[..hlen]);
-            hmac_into::<M>(&scratch[..hlen], &[&v[..hlen], &[0x00]], &mut k)?;
-            update_v(&k[..hlen], &mut v, &mut scratch)?;
+            hmac_into::<M>(&scratch[..hlen], &[&v[..hlen], &[0x00]], &mut k[..])?;
+            update_v(&k[..hlen], &mut v[..], &mut scratch[..])?;
         }
     }
 
@@ -958,6 +961,12 @@ pub mod dangerous {
         digest: &[u8],
         out_k: &mut [u8],
     ) -> bool {
+        const {
+            assert!(
+                C::ELEM_BYTES <= MAX_QLEN_BYTES,
+                "Curve's ELEM_BYTES exceeds MAX_QLEN_BYTES"
+            );
+        }
         let eb = C::ELEM_BYTES;
         if private_key.len() != eb || out_k.len() != eb || digest.is_empty() {
             return false;
@@ -973,14 +982,15 @@ pub mod dangerous {
         let qlen = bitlen_be(C::N);
 
         // h1 = bits2octets(digest) = int2octets(bits2int(digest) mod n).
-        let mut h1 = [0u8; MAX_QLEN_BYTES];
+        let mut h1 = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
         let e = fn_.into_raw(&fn_.reduce(&hash_to_scalar::<T>(digest, qlen)));
         to_be::<T>(&e, &mut h1[..eb]);
 
-        let Some(k) = rfc6979_nonce::<C, T, M>(private_key, &h1[..eb], &n, qlen) else {
+        let Some(mut k) = rfc6979_nonce::<C, T, M>(private_key, &h1[..eb], &n, qlen) else {
             return false;
         };
         to_be::<T>(&k, out_k);
+        k.zeroize();
         true
     }
 
@@ -1002,8 +1012,16 @@ pub mod dangerous {
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
+        const {
+            assert!(
+                C::ELEM_BYTES <= MAX_QLEN_BYTES,
+                "Curve's ELEM_BYTES exceeds MAX_QLEN_BYTES"
+            );
+        }
         let eb = C::ELEM_BYTES;
-        let mut k = [0u8; MAX_QLEN_BYTES];
+        // Zeroizing: the nonce is wiped on the early-return and normal
+        // paths alike.
+        let mut k = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
         if !derive_nonce_rfc6979::<C, T, M>(private_key, digest, &mut k[..eb]) {
             return false;
         }
