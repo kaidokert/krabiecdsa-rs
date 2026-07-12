@@ -221,6 +221,64 @@ macro_rules! define_curve {
             ) -> bool {
                 verify_for_curve::<$marker, T>(pubkey, digest, r, s)
             }
+
+            /// SEC1-uncompressed verifying key, carrying the bigint
+            /// backend as a type parameter. Exists for the RustCrypto
+            /// [`signature::hazmat::PrehashVerifier`] integration;
+            /// the plain [`verify_prehashed`] function is the native
+            /// API.
+            #[derive(Copy, Clone, PartialEq, Eq)]
+            pub struct VerifyingKey<T: UnsignedModularInt> {
+                sec1: [u8; PUBKEY_BYTES],
+                // fn() -> T rather than T: the key names a backend,
+                // it doesn't own one, so auto traits (Send/Sync) hold
+                // unconditionally. Same marker convention as
+                // modmath's Field personality parameter.
+                _backend: core::marker::PhantomData<fn() -> T>,
+            }
+
+            impl<T: UnsignedModularInt> VerifyingKey<T> {
+                /// Wrap SEC1 uncompressed bytes (`0x04 || X || Y`).
+                /// No validation happens here — the point is checked
+                /// on every verify, which returns `Err` for a key
+                /// that is malformed or off-curve.
+                pub const fn from_sec1_bytes(sec1: [u8; PUBKEY_BYTES]) -> Self {
+                    Self {
+                        sec1,
+                        _backend: core::marker::PhantomData,
+                    }
+                }
+
+                /// The wrapped SEC1 bytes.
+                pub const fn as_sec1_bytes(&self) -> &[u8; PUBKEY_BYTES] {
+                    &self.sec1
+                }
+            }
+
+            /// `prehash` is the message digest (see
+            /// [`verify_for_curve`] for the truncation rule);
+            /// `signature` is IEEE P1363 `r || s`, fixed-width. Any
+            /// other signature length is an error.
+            impl<T: UnsignedModularInt, S: AsRef<[u8]>>
+                signature::hazmat::PrehashVerifier<S> for VerifyingKey<T>
+            {
+                fn verify_prehash(
+                    &self,
+                    prehash: &[u8],
+                    signature: &S,
+                ) -> Result<(), signature::Error> {
+                    let sig = signature.as_ref();
+                    if sig.len() != 2 * $eb {
+                        return Err(signature::Error::new());
+                    }
+                    let (r, s) = sig.split_at($eb);
+                    if verify_for_curve::<$marker, T>(&self.sec1, prehash, r, s) {
+                        Ok(())
+                    } else {
+                        Err(signature::Error::new())
+                    }
+                }
+            }
         }
     };
 }
