@@ -1,0 +1,41 @@
+name: Coverage
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+  # Coveralls action posts a commit status (and optionally a check run)
+  # back to the PR head — without these scopes the upload succeeds but
+  # the `coverage/coveralls` status never appears on GitHub.
+  statuses: write
+  checks: write
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Coveralls wants git history.
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ecdsa
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage
+        run: cargo llvm-cov --manifest-path=ecdsa/Cargo.toml --lcov --output-path lcov.info
+
+      - uses: coverallsapp/github-action@v2.3.6
+        with:
+          file: lcov.info
