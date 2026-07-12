@@ -33,15 +33,17 @@ struct CavpVector {
 }
 
 fn hex_to_bytes(hex: &str) -> Vec<u8> {
+    assert_eq!(hex.len() % 2, 0, "odd hex length in CAVP vector");
     (0..hex.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("invalid hex in CAVP vector"))
         .collect()
 }
 
 fn run<C: Curve, T: UnsignedModularInt>(vectors: &[CavpVector], hash: fn(&[u8]) -> Vec<u8>) {
     for v in vectors {
-        let mut pubkey = vec![0x04u8];
+        let mut pubkey = Vec::with_capacity(1 + 2 * C::ELEM_BYTES);
+        pubkey.push(0x04);
         pubkey.extend_from_slice(&hex_to_bytes(v.qx));
         pubkey.extend_from_slice(&hex_to_bytes(v.qy));
         let digest = hash(&hex_to_bytes(v.msg));
@@ -95,7 +97,7 @@ fn cavp_p384_sha384() {
 }
 
 /// `[P-256,SHA-256]` section of SigVer.rsp.
-const P256_SHA256: &[CavpVector] = &[
+const P256_SHA256: &[CavpVector; 15] = &[
     CavpVector {
         tc: 1,
         comment: "",
@@ -249,7 +251,7 @@ const P256_SHA256: &[CavpVector] = &[
 ];
 
 /// `[P-256,SHA-384]` section of SigVer.rsp.
-const P256_SHA384: &[CavpVector] = &[
+const P256_SHA384: &[CavpVector; 15] = &[
     CavpVector {
         tc: 1,
         comment: "",
@@ -403,7 +405,7 @@ const P256_SHA384: &[CavpVector] = &[
 ];
 
 /// `[P-256,SHA-512]` section of SigVer.rsp.
-const P256_SHA512: &[CavpVector] = &[
+const P256_SHA512: &[CavpVector; 15] = &[
     CavpVector {
         tc: 1,
         comment: "",
@@ -557,7 +559,7 @@ const P256_SHA512: &[CavpVector] = &[
 ];
 
 /// `[P-384,SHA-256]` section of SigVer.rsp.
-const P384_SHA256: &[CavpVector] = &[
+const P384_SHA256: &[CavpVector; 15] = &[
     CavpVector {
         tc: 1,
         comment: "",
@@ -711,7 +713,7 @@ const P384_SHA256: &[CavpVector] = &[
 ];
 
 /// `[P-384,SHA-384]` section of SigVer.rsp.
-const P384_SHA384: &[CavpVector] = &[
+const P384_SHA384: &[CavpVector; 15] = &[
     CavpVector {
         tc: 1,
         comment: "",
