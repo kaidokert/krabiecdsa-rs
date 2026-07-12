@@ -694,5 +694,158 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
     fn_.reduce(&x_affine) == r_res
 }
 
+/// **Proof-of-concept ECDSA signing — NOT production-safe. Do not use
+/// on real keys.**
+///
+/// This module exists to prove the signing math is correct against
+/// canonical fixed vectors (RFC 6979 §A.2.5), nothing more. It is
+/// **off by default** behind the `experimental-signing` cargo feature and gated
+/// behind this deliberately-named module. Two properties a real
+/// signer needs and this does NOT have:
+///
+/// - **The nonce is caller-supplied, not derived.** A repeated or
+///   biased `k` leaks the private key outright. A shippable signer
+///   derives `k` deterministically per RFC 6979; that is the
+///   mandatory follow-up before this leaves POC status.
+/// - **The arithmetic is variable-time.** It runs on the same
+///   non-constant-time (`Nct`) modmath surface the verify path uses,
+///   so the secret scalar and nonce leak through timing. A shippable
+///   signer runs the secret operations on the `Ct` surface.
+///
+/// Until both are addressed and audited, this is a correctness
+/// demonstrator only.
+#[cfg(feature = "experimental-signing")]
+pub mod dangerous {
+    use super::*;
+
+    /// Fixed-iteration double-and-add `scalar · base`. Variable-time
+    /// (POC only — see the module warning).
+    fn scalar_mul<'f, T: UnsignedModularInt>(
+        f: &'f FieldNct<T>,
+        curve_a: &ResidueNct<'f, T>,
+        bits: usize,
+        scalar: &T,
+        base: &Point<'f, T>,
+    ) -> Point<'f, T> {
+        let mut acc = infinity(f);
+        for i in (0..bits).rev() {
+            acc = double(f, curve_a, &acc);
+            if bit(scalar, i) {
+                acc = add(f, curve_a, &acc, base);
+            }
+        }
+        acc
+    }
+
+    /// Serialize `v` to `out.len()` big-endian bytes (no `ToBytes`
+    /// bound needed on the backend). Consumes a running copy one bit
+    /// at a time — single-bit shifts rather than one wide shift per
+    /// bit, so it stays linear in the backend's width.
+    fn to_be<T: UnsignedModularInt>(v: &T, out: &mut [u8]) {
+        let mut acc = *v;
+        for slot in out.iter_mut().rev() {
+            let mut b = 0u8;
+            for j in 0..8 {
+                if acc & T::one() != T::zero() {
+                    b |= 1 << j;
+                }
+                acc >>= 1;
+            }
+            *slot = b;
+        }
+    }
+
+    /// Sign `digest` under `private_key` with an **externally supplied
+    /// nonce** `k`, writing the signature halves to `out_r` / `out_s`.
+    ///
+    /// All scalars are big-endian, `C::ELEM_BYTES` long. Returns
+    /// `false` (writing nothing meaningful) on any malformed input,
+    /// on `d`/`k` outside `[1, n−1]`, or on the degenerate `r == 0` /
+    /// `s == 0` outcomes (RFC 6979 says resample `k` — here the caller
+    /// must supply a different `k`). Produces the possibly-high-`s`
+    /// signature; low-`s` normalization is the caller's policy.
+    ///
+    /// **`k` MUST be unique and unpredictable per signature.** See the
+    /// [module warning](self); this is not a safe API.
+    #[must_use]
+    pub fn sign_prehashed_with_k<C: Curve, T: UnsignedModularInt>(
+        private_key: &[u8],
+        digest: &[u8],
+        k: &[u8],
+        out_r: &mut [u8],
+        out_s: &mut [u8],
+    ) -> bool {
+        const {
+            assert!(
+                core::mem::size_of::<T>() >= C::ELEM_BYTES,
+                "backend type narrower than the curve's field element"
+            );
+            assert!(
+                C::P.len() == C::ELEM_BYTES
+                    && C::A.len() == C::ELEM_BYTES
+                    && C::B.len() == C::ELEM_BYTES
+                    && C::N.len() == C::ELEM_BYTES
+                    && C::GX.len() == C::ELEM_BYTES
+                    && C::GY.len() == C::ELEM_BYTES,
+                "Curve constants must all be exactly ELEM_BYTES long"
+            );
+        }
+        let eb = C::ELEM_BYTES;
+        if private_key.len() != eb
+            || k.len() != eb
+            || out_r.len() != eb
+            || out_s.len() != eb
+            || digest.is_empty()
+        {
+            return false;
+        }
+        let p = from_be::<T>(C::P);
+        let n = from_be::<T>(C::N);
+        let zero = T::zero();
+
+        let d = from_be::<T>(private_key);
+        let k_int = from_be::<T>(k);
+        if d == zero || !lt(&d, &n) || k_int == zero || !lt(&k_int, &n) {
+            return false;
+        }
+
+        let (Some(fp), Some(fn_)) = (FieldNct::new(p), FieldNct::new(n)) else {
+            return false;
+        };
+        let a_res = fp.reduce(&from_be::<T>(C::A));
+        let g = Point {
+            x: fp.reduce(&from_be::<T>(C::GX)),
+            y: fp.reduce(&from_be::<T>(C::GY)),
+            z: fp.one(),
+        };
+
+        // r = x(k·G) mod n.
+        let kg = scalar_mul(&fp, &a_res, eb * 8, &k_int, &g);
+        let Some(rx) = to_affine_x(&fp, &kg) else {
+            return false;
+        };
+        let r = fn_.into_raw(&fn_.reduce(&rx));
+        if r == zero {
+            return false;
+        }
+
+        // s = k⁻¹ · (e + r·d) mod n.
+        let e = fn_.reduce(&hash_to_scalar(digest, bitlen_be(C::N)));
+        let Some(k_inv) = fn_.inv_fermat(&fn_.reduce(&k_int)) else {
+            return false;
+        };
+        let rd = fn_.mul(&fn_.reduce(&r), &fn_.reduce(&d));
+        let s_res = fn_.mul(&k_inv, &fn_.add(&e, &rd));
+        let s = fn_.into_raw(&s_res);
+        if s == zero {
+            return false;
+        }
+
+        to_be::<T>(&r, out_r);
+        to_be::<T>(&s, out_s);
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests;
