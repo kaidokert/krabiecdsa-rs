@@ -31,6 +31,10 @@ fn main() -> ! {
     ufmt::uwriteln!(&mut serial, "Time: {} ms ({} ticks)", ms, ticks).ok();
     ufmt::uwriteln!(&mut serial, "Max stack usage: {} bytes", stack_used).ok();
 
+    // Interrupts off before parking: simavr detects sleep-with-
+    // interrupts-disabled and exits instead of burning the wrapper
+    // timeout.
+    avr_device::interrupt::disable();
     loop {
         unsafe { core::arch::asm!("sleep") }
     }

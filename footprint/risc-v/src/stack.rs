@@ -28,7 +28,7 @@ pub fn paint_stack_inner<const SAFE: usize>() {
         // overwrite the live stack frame.
         let mut sp: usize;
         core::arch::asm!("mv {}, sp", out(reg) sp, options(nomem, nostack));
-        let live_limit = (sp as *mut u8).offset(-(SAFE as isize));
+        let live_limit = sp.saturating_sub(SAFE) as *mut u8;
 
         let paint_end = if (live_limit as usize) < (paint_start as usize) {
             paint_start
@@ -49,7 +49,7 @@ pub fn check_stack_high_water_mark_inner<const SAFE: usize>() -> usize {
         let paint_start = &_sheap as *const u32 as *mut u8;
 
         let mut current = paint_start;
-        while current < stack_start && *current == 0xAA {
+        while current < stack_start && core::ptr::read_volatile(current) == 0xAA {
             current = current.offset(1);
         }
 
