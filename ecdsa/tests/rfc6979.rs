@@ -9,7 +9,7 @@
 //! Digests are the precomputed SHA-256 of the RFC messages, since the
 //! crate's signing API (like its verify API) is prehashed.
 
-#![cfg(feature = "signing")]
+#![cfg(feature = "experimental-signing")]
 
 use krabiecdsa::dangerous::sign_prehashed_with_k;
 use krabiecdsa::p256::P256;

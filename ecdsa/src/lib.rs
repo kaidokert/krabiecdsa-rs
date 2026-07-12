@@ -699,7 +699,7 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
 ///
 /// This module exists to prove the signing math is correct against
 /// canonical fixed vectors (RFC 6979 §A.2.5), nothing more. It is
-/// **off by default** behind the `signing` cargo feature and gated
+/// **off by default** behind the `experimental-signing` cargo feature and gated
 /// behind this deliberately-named module. Two properties a real
 /// signer needs and this does NOT have:
 ///
@@ -714,7 +714,7 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
 ///
 /// Until both are addressed and audited, this is a correctness
 /// demonstrator only.
-#[cfg(feature = "signing")]
+#[cfg(feature = "experimental-signing")]
 pub mod dangerous {
     use super::*;
 

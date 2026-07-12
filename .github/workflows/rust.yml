@@ -35,13 +35,13 @@ jobs:
     - name: Clippy
       run: cargo clippy --all-targets -- -D warnings
     - name: Clippy (signing)
-      run: cargo clippy --all-targets --features signing -- -D warnings
+      run: cargo clippy --all-targets --features experimental-signing -- -D warnings
     - name: Build
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
     - name: Run tests (signing)
-      run: cargo test --features signing --verbose
+      run: cargo test --features experimental-signing --verbose
     - name: Build with modmath/zeroize (feature-unification guard)
       run: cargo build -F modmath/zeroize --verbose
 
