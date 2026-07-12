@@ -54,22 +54,6 @@ def run_cmd(args, timeout=TIMEOUT_RUN, **kwargs):
     return result.returncode, result.stdout, result.stderr
 
 
-def build_examples(target, features):
-    """Build all examples for a target. Returns True on success."""
-    args = ["cargo", "build", "--target", target, "--release", "--examples"]
-    if features:
-        args.extend(["--features", ",".join(features)])
-    rc, _out, err = run_cmd(
-        args,
-        timeout=TIMEOUT_BUILD,
-    )
-    if rc != 0:
-        print(f"BUILD FAILED for {target}:", file=sys.stderr)
-        print(err, file=sys.stderr)
-        return False
-    return True
-
-
 def run_qemu(target, example, features):
     """Run an example on QEMU via cargo run. Returns stdout+stderr."""
     args = ["cargo", "run", "--target", target, "--release", "--example", example]

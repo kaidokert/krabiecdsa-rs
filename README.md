@@ -17,9 +17,9 @@ arithmetic is generic over bigint backend traits, built on
 | Cortex-M0 | P-256 | u32×8 | 5.8 | 1576 |
 | Cortex-M0 | secp256k1 | u32×8 | 5.8 | 1576 |
 | Cortex-M0 | P-384 | u32×12 | 5.9 | 2368 |
-| Cortex-M3 | P-256 | u32×8 | 6.0 | 1544 |
-| Cortex-M3 | secp256k1 | u32×8 | 6.0 | 1544 |
-| Cortex-M3 | P-384 | u32×12 | 6.0 | 2328 |
+| Cortex-M3 | P-256 | u32×8 | 6.0 | 1536 |
+| Cortex-M3 | secp256k1 | u32×8 | 6.0 | 1536 |
+| Cortex-M3 | P-384 | u32×12 | 6.0 | 2320 |
 
 Verify-minus-baseline deltas from the QEMU harness in `footprint/`;
 u8-limb backends and approximate cycle counts in its full matrix.

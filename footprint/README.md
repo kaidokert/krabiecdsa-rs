@@ -15,4 +15,4 @@ ed25519_heapless / rsa_heapless harnesses.
 - `fixtures/` — one verify fixture per curve, taken from the crate's
   openssl cross-check test vectors.
 
-RISC-V and AVR harnesses follow the same pattern; planned next.
+RISC-V and AVR harnesses follow the same pattern and are planned next.
