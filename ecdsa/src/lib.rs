@@ -35,6 +35,7 @@ use modmath::{FieldNct, ResidueNct};
 // separately-versioned dependencies that may fail to unify.
 pub use const_num_traits;
 pub use modmath;
+pub use zeroize;
 
 /// Bound bundle for the generic bigint backend the verifiers build
 /// on. Marker trait, blanket-implemented for every conforming type
@@ -69,6 +70,12 @@ pub trait UnsignedModularInt:
     + modmath::NonCt
     + modmath::WideMul
     + modmath::CiosMontMul
+    // modmath's MontStorage requires Zeroize when the dependency
+    // graph enables modmath/zeroize (feature unification in a larger
+    // build can do that even though this crate never asks for it);
+    // carrying DefaultIsZeroes here keeps the generic verify code
+    // compiling in both worlds. Same bound ed25519's bundle carries.
+    + zeroize::DefaultIsZeroes
 {
 }
 
@@ -90,6 +97,7 @@ impl<T> UnsignedModularInt for T where
         + modmath::NonCt
         + modmath::WideMul
         + modmath::CiosMontMul
+        + zeroize::DefaultIsZeroes
 {
 }
 
