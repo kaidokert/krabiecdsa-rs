@@ -694,26 +694,25 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
     fn_.reduce(&x_affine) == r_res
 }
 
-/// **Proof-of-concept ECDSA signing — NOT production-safe. Do not use
-/// on real keys.**
+/// **Experimental ECDSA signing — NOT production-safe. Do not use on
+/// real keys.**
 ///
-/// This module exists to prove the signing math is correct against
-/// canonical fixed vectors (RFC 6979 §A.2.5), nothing more. It is
-/// **off by default** behind the `experimental-signing` cargo feature and gated
-/// behind this deliberately-named module. Two properties a real
-/// signer needs and this does NOT have:
+/// Off by default behind the `experimental-signing` cargo feature and
+/// gated behind this deliberately-named module. [`sign_prehashed`]
+/// derives its nonce deterministically per RFC 6979 — no reuse or
+/// bias; [`sign_prehashed_with_k`] is the lower primitive that still
+/// takes a caller `k`.
 ///
-/// - **Nonces:** [`dangerous::sign_prehashed`] derives `k`
-///   deterministically per RFC 6979 (no reuse footgun); the lower
-///   [`dangerous::sign_prehashed_with_k`] still takes a caller `k`
-///   and is retained as the tested primitive.
+/// What still keeps this out of production:
+///
 /// - **The arithmetic is variable-time.** It runs on the same
 ///   non-constant-time (`Nct`) modmath surface the verify path uses,
 ///   so the secret scalar and nonce leak through timing. A shippable
 ///   signer runs the secret operations on the `Ct` surface.
+/// - **Unaudited.** Correctness is pinned to RFC 6979 fixed vectors;
+///   that is not a constant-time review.
 ///
-/// Until both are addressed and audited, this is a correctness
-/// demonstrator only.
+/// Until those are addressed, this is a correctness demonstrator only.
 #[cfg(feature = "experimental-signing")]
 pub mod dangerous {
     use super::*;
