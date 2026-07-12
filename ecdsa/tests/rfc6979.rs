@@ -139,4 +139,27 @@ fn rejects_out_of_range_scalars() {
         &mut r[..31],
         &mut s
     ));
+
+    // wrong-length private key / nonce / out_s
+    assert!(!sign_prehashed_with_k::<P256, U256>(
+        &d[..31],
+        &digest,
+        &k,
+        &mut r,
+        &mut s
+    ));
+    assert!(!sign_prehashed_with_k::<P256, U256>(
+        &d,
+        &digest,
+        &k[..31],
+        &mut r,
+        &mut s
+    ));
+    assert!(!sign_prehashed_with_k::<P256, U256>(
+        &d,
+        &digest,
+        &k,
+        &mut r,
+        &mut s[..31]
+    ));
 }

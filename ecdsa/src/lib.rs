@@ -737,17 +737,19 @@ pub mod dangerous {
         acc
     }
 
-    /// Serialize `v` to `out.len()` big-endian bytes via bit
-    /// extraction (no `ToBytes` bound needed on the backend).
+    /// Serialize `v` to `out.len()` big-endian bytes (no `ToBytes`
+    /// bound needed on the backend). Consumes a running copy one bit
+    /// at a time — single-bit shifts rather than one wide shift per
+    /// bit, so it stays linear in the backend's width.
     fn to_be<T: UnsignedModularInt>(v: &T, out: &mut [u8]) {
-        let n = out.len();
-        for (i, slot) in out.iter_mut().enumerate() {
-            let base = (n - 1 - i) * 8;
+        let mut acc = *v;
+        for slot in out.iter_mut().rev() {
             let mut b = 0u8;
             for j in 0..8 {
-                if bit(v, base + j) {
+                if acc & T::one() != T::zero() {
                     b |= 1 << j;
                 }
+                acc >>= 1;
             }
             *slot = b;
         }
@@ -777,6 +779,15 @@ pub mod dangerous {
             assert!(
                 core::mem::size_of::<T>() >= C::ELEM_BYTES,
                 "backend type narrower than the curve's field element"
+            );
+            assert!(
+                C::P.len() == C::ELEM_BYTES
+                    && C::A.len() == C::ELEM_BYTES
+                    && C::B.len() == C::ELEM_BYTES
+                    && C::N.len() == C::ELEM_BYTES
+                    && C::GX.len() == C::ELEM_BYTES
+                    && C::GY.len() == C::ELEM_BYTES,
+                "Curve constants must all be exactly ELEM_BYTES long"
             );
         }
         let eb = C::ELEM_BYTES;
