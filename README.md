@@ -20,6 +20,13 @@ arithmetic is generic over bigint backend traits, built on
 | Cortex-M3 | P-256 | u32×8 | 6.0 | 1536 |
 | Cortex-M3 | secp256k1 | u32×8 | 6.0 | 1536 |
 | Cortex-M3 | P-384 | u32×12 | 6.0 | 2320 |
+| RV32IMAC | P-256 | u32×8 | 6.6 | 1568 |
+| RV32IMAC | secp256k1 | u32×8 | 6.6 | 1568 |
+| RV32IMAC | P-384 | u32×12 | 6.8 | 2368 |
+| AVR ATmega2560 | P-256 | u8×32 | 8.6 | 2336 |
+| AVR ATmega2560 | secp256k1 | u8×32 | 8.6 | 2347 |
+| AVR ATmega2560 | P-384 | u8×48 | 8.6 | 3488 |
 
-Verify-minus-baseline deltas from the QEMU harness in `footprint/`;
-u8-limb backends and approximate cycle counts in its full matrix.
+Verify-minus-baseline deltas from the emulated harnesses in
+`footprint/` (QEMU for Cortex-M and RV32, simavr for AVR); u8-limb
+backends and rough cycle/time proxies in their full matrices.

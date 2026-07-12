@@ -12,7 +12,13 @@ ed25519_heapless / rsa_heapless harnesses.
   metrics table. Requires `qemu-system-arm`, `cargo-bloat`, and the
   thumb targets (`rustup target add thumbv6m-none-eabi
   thumbv7m-none-eabi thumbv7em-none-eabi`).
+- `risc-v/` — RV32IMAC under `qemu-system-riscv32` (sifive_e; no
+  exit mechanism, so `qemu_wrapper.py` kills the machine after the
+  METRIC line). Run `python3 run_suite.py`; requires
+  `qemu-system-riscv32` and the `riscv32imac-unknown-none-elf` target.
+- `avr/` — ATmega2560 under `simavr`. Nightly-pinned
+  (`rust-toolchain.toml`) with `build-std`; u8 limbs only — there is
+  no wider word on AVR. Run `python3 run_suite.py` (add `--fast` for
+  the baseline + P-256 subset); requires `simavr`.
 - `fixtures/` — one verify fixture per curve, taken from the crate's
-  openssl cross-check test vectors.
-
-RISC-V and AVR harnesses follow the same pattern and are planned next.
+  openssl cross-check test vectors, shared by all three harnesses.
