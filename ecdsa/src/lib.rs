@@ -35,6 +35,7 @@ use modmath::{FieldNct, ResidueNct};
 // separately-versioned dependencies that may fail to unify.
 pub use const_num_traits;
 pub use modmath;
+pub use zeroize;
 
 /// Bound bundle for the generic bigint backend the verifiers build
 /// on. Marker trait, blanket-implemented for every conforming type
