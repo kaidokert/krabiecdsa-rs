@@ -16,6 +16,11 @@ const-num-traits = { version = "0.2", default-features = false }
 signature = { version = "3.0", default-features = false }
 zeroize = { version = "1", default-features = false }
 
+[features]
+# Proof-of-concept ECDSA signing (see the `dangerous` module). Off by
+# default: the no-feature build carries none of it and stays verify-only.
+signing = []
+
 [dev-dependencies]
 fixed-bigint = { version = "0.5", default-features = false, features = ["cios", "zeroize"] }
 sha2 = "0.10"
