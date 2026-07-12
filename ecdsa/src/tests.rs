@@ -301,6 +301,17 @@ mod p256_tests {
         let mut bad = sig;
         bad[0] ^= 0x01;
         assert!(key.verify_prehash(&DIGEST, &bad).is_err());
+
+        // malformed keys err at verify time, as documented: wrong
+        // SEC1 prefix, and an off-curve point (corrupted y)
+        let mut pk = PUB;
+        pk[0] = 0x02;
+        let key = crate::p256::VerifyingKey::<U256>::from_sec1_bytes(pk);
+        assert!(key.verify_prehash(&DIGEST, &sig).is_err());
+        let mut pk = PUB;
+        pk[64] ^= 0x01;
+        let key = crate::p256::VerifyingKey::<U256>::from_sec1_bytes(pk);
+        assert!(key.verify_prehash(&DIGEST, &sig).is_err());
     }
 }
 
@@ -361,6 +372,10 @@ mod k256_tests {
         sig[..32].copy_from_slice(&R);
         sig[32..].copy_from_slice(&S);
         assert!(key.verify_prehash(&DIGEST, &sig).is_ok());
+        assert!(key.verify_prehash(&DIGEST, &&sig[..63]).is_err());
+        let mut bad = sig;
+        bad[0] ^= 0x01;
+        assert!(key.verify_prehash(&DIGEST, &bad).is_err());
     }
 }
 
@@ -432,6 +447,10 @@ mod p384_tests {
         sig[..48].copy_from_slice(&R);
         sig[48..].copy_from_slice(&S);
         assert!(key.verify_prehash(&DIGEST, &sig).is_ok());
+        assert!(key.verify_prehash(&DIGEST, &&sig[..95]).is_err());
+        let mut bad = sig;
+        bad[0] ^= 0x01;
+        assert!(key.verify_prehash(&DIGEST, &bad).is_err());
     }
 
     #[test]
