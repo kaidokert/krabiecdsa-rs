@@ -1,0 +1,78 @@
+//! Unified ECDSA verify example for all measured curves on AVR.
+//! Picks the fixture and curve marker from cfg features so the same
+//! source builds for every entry in the suite. AVR uses u8 limbs
+//! throughout.
+//!
+//! Exactly one `curve_*` feature must be enabled.
+
+#![no_std]
+#![no_main]
+#![feature(asm_experimental_arch)]
+
+const _: () = {
+    const N: usize = cfg!(feature = "curve_p256") as usize
+        + cfg!(feature = "curve_k256") as usize
+        + cfg!(feature = "curve_p384") as usize;
+    assert!(N == 1, "exactly one `curve_*` feature must be enabled");
+};
+
+use fixed_bigint::FixedUInt;
+use krabiecdsa::verify_for_curve;
+use krabiecdsa_footprint_avr as _;
+use krabiecdsa_footprint_avr::stack_measurement::*;
+
+mod fixture {
+    #[cfg(feature = "curve_p256")]
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/p256.rs"));
+    #[cfg(feature = "curve_k256")]
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/k256.rs"));
+    #[cfg(feature = "curve_p384")]
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/p384.rs"));
+}
+
+#[cfg(feature = "curve_p256")]
+use krabiecdsa::p256::P256 as Curve;
+#[cfg(feature = "curve_k256")]
+use krabiecdsa::k256::K256 as Curve;
+#[cfg(feature = "curve_p384")]
+use krabiecdsa::p384::P384 as Curve;
+
+#[cfg(any(feature = "curve_p256", feature = "curve_k256"))]
+type Backend = FixedUInt<u8, 32>;
+#[cfg(feature = "curve_p384")]
+type Backend = FixedUInt<u8, 48>;
+
+#[arduino_hal::entry]
+fn main() -> ! {
+    let dp = arduino_hal::Peripherals::take().unwrap();
+    let pins = arduino_hal::pins!(dp);
+    let mut serial = arduino_hal::default_serial!(dp, pins, 57600);
+
+    unsafe { fill_stack_with_watermark() };
+    let counter = krabiecdsa_footprint_avr::cyclecount::CycleCounter::start(&dp.TC1);
+    let result = verify_for_curve::<Curve, Backend>(
+        &fixture::PUBKEY,
+        &fixture::DIGEST,
+        &fixture::R,
+        &fixture::S,
+    );
+    let ticks = counter.elapsed_ticks(&dp.TC1);
+    let ms = counter.elapsed_ms(&dp.TC1);
+    let stack_used = unsafe { measure_stack_usage() };
+
+    if result {
+        ufmt::uwriteln!(&mut serial, "ecdsa ACCEPT").ok();
+    } else {
+        ufmt::uwriteln!(&mut serial, "ecdsa REJECT").ok();
+    }
+    ufmt::uwriteln!(&mut serial, "Time: {} ms ({} ticks)", ms, ticks).ok();
+    ufmt::uwriteln!(&mut serial, "Max stack usage: {} bytes", stack_used).ok();
+
+    // Interrupts off before parking: simavr detects sleep-with-
+    // interrupts-disabled and exits instead of burning the wrapper
+    // timeout.
+    avr_device::interrupt::disable();
+    loop {
+        unsafe { core::arch::asm!("sleep") }
+    }
+}

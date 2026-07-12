@@ -1,9 +1,8 @@
-// Linker symbols: their *addresses* carry the values (`_stack_start =
-// ORIGIN + LENGTH`, `__sheap` = first byte past .bss/.data/.uninit).
-// `&sym as usize` is the correct read — never dereference these.
+// Linker symbols: their *addresses* carry the values. `&sym as usize`
+// is the correct read — never dereference these.
 unsafe extern "C" {
     static _stack_start: u32;
-    static __sheap: u32;
+    static _sheap: u32;
 }
 
 const SAFE_ZONE_BYTES: usize = 256;
@@ -21,14 +20,14 @@ pub fn check_stack_high_water_mark() -> usize {
 pub fn paint_stack_inner<const SAFE: usize>() {
     unsafe {
         let stack_start = &_stack_start as *const u32 as *mut u8;
-        // Paint floor: the first byte past .bss/.data/.uninit, so statics
-        // can never be overwritten no matter how large they grow.
-        let paint_start = &__sheap as *const u32 as *mut u8;
+        // Paint floor: first byte past .bss/.data, so statics can never
+        // be overwritten no matter how large they grow.
+        let paint_start = &_sheap as *const u32 as *mut u8;
 
         // Read current SP and stop the paint a margin below it, so we never
         // overwrite the live stack frame.
         let mut sp: usize;
-        core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack));
+        core::arch::asm!("mv {}, sp", out(reg) sp, options(nomem, nostack));
         let live_limit = sp.saturating_sub(SAFE) as *mut u8;
 
         let paint_end = if (live_limit as usize) < (paint_start as usize) {
@@ -47,7 +46,7 @@ pub fn paint_stack_inner<const SAFE: usize>() {
 pub fn check_stack_high_water_mark_inner<const SAFE: usize>() -> usize {
     unsafe {
         let stack_start = &_stack_start as *const u32 as *mut u8;
-        let paint_start = &__sheap as *const u32 as *mut u8;
+        let paint_start = &_sheap as *const u32 as *mut u8;
 
         let mut current = paint_start;
         while current < stack_start && core::ptr::read_volatile(current) == 0xAA {
