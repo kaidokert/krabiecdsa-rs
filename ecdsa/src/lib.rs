@@ -698,10 +698,10 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
 /// real keys.**
 ///
 /// Off by default behind the `experimental-signing` cargo feature and
-/// gated behind this deliberately-named module. [`sign_prehashed`]
-/// derives its nonce deterministically per RFC 6979 — no reuse or
-/// bias; [`sign_prehashed_with_k`] is the lower primitive that still
-/// takes a caller `k`.
+/// gated behind this deliberately-named module.
+/// [`dangerous::sign_prehashed`] derives its nonce deterministically
+/// per RFC 6979 — no reuse or bias; [`dangerous::sign_prehashed_with_k`]
+/// is the lower primitive that still takes a caller `k`.
 ///
 /// What still keeps this out of production:
 ///
