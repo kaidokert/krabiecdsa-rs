@@ -69,6 +69,12 @@ pub trait UnsignedModularInt:
     + modmath::NonCt
     + modmath::WideMul
     + modmath::CiosMontMul
+    // modmath's MontStorage requires Zeroize when the dependency
+    // graph enables modmath/zeroize (feature unification in a larger
+    // build can do that even though this crate never asks for it);
+    // carrying DefaultIsZeroes here keeps the generic verify code
+    // compiling in both worlds. Same bound ed25519's bundle carries.
+    + zeroize::DefaultIsZeroes
 {
 }
 
@@ -90,6 +96,7 @@ impl<T> UnsignedModularInt for T where
         + modmath::NonCt
         + modmath::WideMul
         + modmath::CiosMontMul
+        + zeroize::DefaultIsZeroes
 {
 }
 
