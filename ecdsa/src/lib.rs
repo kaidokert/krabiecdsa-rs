@@ -230,6 +230,10 @@ macro_rules! define_curve {
             #[derive(Copy, Clone, PartialEq, Eq)]
             pub struct VerifyingKey<T: UnsignedModularInt> {
                 sec1: [u8; PUBKEY_BYTES],
+                // fn() -> T rather than T: the key names a backend,
+                // it doesn't own one, so auto traits (Send/Sync) hold
+                // unconditionally. Same marker convention as
+                // modmath's Field personality parameter.
                 _backend: core::marker::PhantomData<fn() -> T>,
             }
 
