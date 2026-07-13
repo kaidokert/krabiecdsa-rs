@@ -35,6 +35,8 @@ use modmath::{FieldNct, ResidueNct};
 // separately-versioned dependencies that may fail to unify.
 pub use const_num_traits;
 pub use modmath;
+#[cfg(feature = "experimental-signing")]
+pub use subtle;
 pub use zeroize;
 
 /// Bound bundle for the generic bigint backend the verifiers build
@@ -101,6 +103,37 @@ impl<T> UnsignedModularInt for T where
 {
 }
 
+/// The byte-and-shift surface the personality-agnostic scalar helpers
+/// (`from_be`, `to_be`, `hash_to_scalar`, `lt`, `bit`) need. Both the
+/// Nct verify backend ([`UnsignedModularInt`]) and the Ct signing
+/// backend ([`dangerous::ConstantTimeInt`]) carry these, so the
+/// helpers are written once against this subset and reused by both.
+pub trait ScalarBytes:
+    Copy
+    + PartialEq
+    + PartialOrd
+    + const_num_traits::Zero
+    + const_num_traits::One
+    + const_num_traits::FromByteSlice
+    + core::ops::Shr<usize, Output = Self>
+    + core::ops::ShrAssign<usize>
+    + core::ops::BitAnd<Output = Self>
+{
+}
+
+impl<T> ScalarBytes for T where
+    T: Copy
+        + PartialEq
+        + PartialOrd
+        + const_num_traits::Zero
+        + const_num_traits::One
+        + const_num_traits::FromByteSlice
+        + core::ops::Shr<usize, Output = Self>
+        + core::ops::ShrAssign<usize>
+        + core::ops::BitAnd<Output = Self>
+{
+}
+
 /// Load big-endian bytes into `T`, failing closed.
 ///
 /// `FromByteSlice::from_be_slice` zero-extends short input and rejects
@@ -110,7 +143,7 @@ impl<T> UnsignedModularInt for T where
 /// digests are rejected at the input gate), so the `Err` branch is
 /// structurally unreachable; mapping it to zero rather than
 /// unwrapping avoids linking a panic path.
-fn from_be<T: UnsignedModularInt>(bytes: &[u8]) -> T {
+fn from_be<T: ScalarBytes>(bytes: &[u8]) -> T {
     T::from_be_slice(bytes).unwrap_or_else(|_| T::zero())
 }
 
@@ -391,7 +424,7 @@ fn is_infinity<T: UnsignedModularInt>(f: &FieldNct<T>, pt: &Point<'_, T>) -> boo
 /// Strict `a < b` that fails closed: an incomparable pair (a broken
 /// `PartialOrd` on a third-party backend) reads as "not less", so
 /// every range check that gates on this rejects rather than accepts.
-fn lt<T: UnsignedModularInt>(a: &T, b: &T) -> bool {
+fn lt<T: ScalarBytes>(a: &T, b: &T) -> bool {
     matches!(a.partial_cmp(b), Some(core::cmp::Ordering::Less))
 }
 
@@ -508,7 +541,7 @@ fn add<'f, T: UnsignedModularInt>(
     }
 }
 
-fn bit<T: UnsignedModularInt>(v: &T, i: usize) -> bool {
+fn bit<T: ScalarBytes>(v: &T, i: usize) -> bool {
     (*v >> i) & T::one() != T::zero()
 }
 
@@ -566,7 +599,7 @@ fn bitlen_be(bytes: &[u8]) -> usize {
 /// for the sub-byte remainder when `n_bits` is not a multiple of 8
 /// (all shipped curves are byte-aligned, so their shift is 0, but the
 /// rule is encoded in full for downstream `Curve` impls).
-fn hash_to_scalar<T: UnsignedModularInt>(digest: &[u8], n_bits: usize) -> T {
+fn hash_to_scalar<T: ScalarBytes>(digest: &[u8], n_bits: usize) -> T {
     // len <= n_bits/8 is the overflow-free spelling of len*8 <= n_bits
     // (equivalent for integers): a pathological digest length must not
     // wrap the multiplication on 32-bit targets.
@@ -741,7 +774,7 @@ pub mod dangerous {
     /// bound needed on the backend). Consumes a running copy one bit
     /// at a time — single-bit shifts rather than one wide shift per
     /// bit, so it stays linear in the backend's width.
-    fn to_be<T: UnsignedModularInt>(v: &T, out: &mut [u8]) {
+    fn to_be<T: ScalarBytes>(v: &T, out: &mut [u8]) {
         let mut acc = *v;
         for slot in out.iter_mut().rev() {
             let mut b = 0u8;
@@ -1025,6 +1058,284 @@ pub mod dangerous {
             return false;
         }
         sign_prehashed_with_k::<C, T>(private_key, digest, &k[..eb], out_r, out_s)
+    }
+
+    // ===================================================================
+    // Constant-time signing (RCB complete formulas on the Ct surface)
+    // ===================================================================
+
+    use const_num_traits::CtIsZero;
+    use modmath::{FieldCt, ResidueCt};
+
+    /// Constant-time bigint backend for signing: the Ct-personality
+    /// analog of [`UnsignedModularInt`]. Blanket-implemented for every
+    /// conforming type; in practice `fixed_bigint::FixedUInt<_, _, Ct>`.
+    /// The Nct verify backend does **not** qualify — the personalities
+    /// are distinct types by design, so secret arithmetic runs on this
+    /// one while public verify runs on the other.
+    ///
+    /// The bounds are what `modmath::FieldCt` needs for its
+    /// constant-time `mul`/`add`/`sub`/`inv_fermat` plus the
+    /// branchless point selection in the scalar-multiply ladder.
+    pub trait ConstantTimeInt:
+        ScalarBytes
+        + const_num_traits::WrappingMul<Output = Self>
+        + const_num_traits::WrappingAdd<Output = Self>
+        + const_num_traits::WrappingSub<Output = Self>
+        + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
+        + CtIsZero
+        + modmath::Parity
+        + modmath::WideMul
+        + modmath::CiosMontMulCt
+        + subtle::ConditionallySelectable
+        + subtle::ConstantTimeLess
+        + zeroize::DefaultIsZeroes
+    {
+    }
+
+    impl<T> ConstantTimeInt for T where
+        T: ScalarBytes
+            + const_num_traits::WrappingMul<Output = Self>
+            + const_num_traits::WrappingAdd<Output = Self>
+            + const_num_traits::WrappingSub<Output = Self>
+            + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
+            + CtIsZero
+            + modmath::Parity
+            + modmath::WideMul
+            + modmath::CiosMontMulCt
+            + subtle::ConditionallySelectable
+            + subtle::ConstantTimeLess
+            + zeroize::DefaultIsZeroes
+    {
+    }
+
+    /// Standard (homogeneous) projective point for the RCB formulas —
+    /// `(X:Y:Z)` maps to affine `(X/Z, Y/Z)`, identity is `(0:1:0)`.
+    /// **Not** the Jacobian convention the verify path uses.
+    struct PointCt<'f, T: ConstantTimeInt> {
+        x: ResidueCt<'f, T>,
+        y: ResidueCt<'f, T>,
+        z: ResidueCt<'f, T>,
+    }
+
+    fn identity_ct<T: ConstantTimeInt>(f: &FieldCt<T>) -> PointCt<'_, T> {
+        PointCt {
+            x: f.zero(),
+            y: f.one(),
+            z: f.zero(),
+        }
+    }
+
+    /// Renes–Costello–Batina 2015 complete addition (Algorithm 1,
+    /// arbitrary `a`), translated step-for-step from RustCrypto's
+    /// `primeorder`. Exception-free: correct for equal points,
+    /// inverses, and the identity, with **no data-dependent branches**
+    /// — which is what makes the ladder constant-time. `b3` is `3·b`.
+    #[allow(clippy::many_single_char_names)]
+    fn add_rcb<'f, T: ConstantTimeInt>(
+        f: &'f FieldCt<T>,
+        a: &ResidueCt<'f, T>,
+        b3: &ResidueCt<'f, T>,
+        p: &PointCt<'f, T>,
+        q: &PointCt<'f, T>,
+    ) -> PointCt<'f, T> {
+        let t0 = f.mul(&p.x, &q.x);
+        let t1 = f.mul(&p.y, &q.y);
+        let t2 = f.mul(&p.z, &q.z);
+        let t3 = f.add(&p.x, &p.y);
+        let t4 = f.add(&q.x, &q.y);
+        let t3 = f.mul(&t3, &t4);
+        let t4 = f.add(&t0, &t1);
+        let t3 = f.sub(&t3, &t4);
+        let t4 = f.add(&p.x, &p.z);
+        let t5 = f.add(&q.x, &q.z);
+        let t4 = f.mul(&t4, &t5);
+        let t5 = f.add(&t0, &t2);
+        let t4 = f.sub(&t4, &t5);
+        let t5 = f.add(&p.y, &p.z);
+        let x3 = f.add(&q.y, &q.z);
+        let t5 = f.mul(&t5, &x3);
+        let x3 = f.add(&t1, &t2);
+        let t5 = f.sub(&t5, &x3);
+        let z3 = f.mul(a, &t4);
+        let x3 = f.mul(b3, &t2);
+        let z3 = f.add(&x3, &z3);
+        let x3 = f.sub(&t1, &z3);
+        let z3 = f.add(&t1, &z3);
+        let y3 = f.mul(&x3, &z3);
+        let t1 = f.add(&t0, &t0);
+        let t1 = f.add(&t1, &t0);
+        let t2 = f.mul(a, &t2);
+        let t4 = f.mul(b3, &t4);
+        let t1 = f.add(&t1, &t2);
+        let t2 = f.sub(&t0, &t2);
+        let t2 = f.mul(a, &t2);
+        let t4 = f.add(&t4, &t2);
+        let t0 = f.mul(&t1, &t4);
+        let y3 = f.add(&y3, &t0);
+        let t0 = f.mul(&t5, &t4);
+        let x3 = f.mul(&t3, &x3);
+        let x3 = f.sub(&x3, &t0);
+        let t0 = f.mul(&t3, &t1);
+        let z3 = f.mul(&t5, &z3);
+        let z3 = f.add(&z3, &t0);
+        PointCt {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
+    }
+
+    /// `scalar · base`, constant-time: fixed `bits` iterations,
+    /// double-and-add-*always* with a branchless `cswap` selecting the
+    /// add result on set bits. Every iteration does the same two
+    /// complete additions and one conditional swap regardless of the
+    /// scalar, so timing carries no information about it.
+    fn scalar_mul_ct<'f, T: ConstantTimeInt>(
+        f: &'f FieldCt<T>,
+        a: &ResidueCt<'f, T>,
+        b3: &ResidueCt<'f, T>,
+        bits: usize,
+        scalar: &T,
+        base: &PointCt<'f, T>,
+    ) -> PointCt<'f, T> {
+        let mut r = identity_ct(f);
+        for i in (0..bits).rev() {
+            r = add_rcb(f, a, b3, &r, &r);
+            let mut r_add = add_rcb(f, a, b3, &r, base);
+            let bit = !((*scalar >> i) & T::one()).ct_is_zero();
+            ResidueCt::cswap(bit, &mut r.x, &mut r_add.x);
+            ResidueCt::cswap(bit, &mut r.y, &mut r_add.y);
+            ResidueCt::cswap(bit, &mut r.z, &mut r_add.z);
+        }
+        r
+    }
+
+    /// Affine x-coordinate `X/Z` (RCB projective), or `None` at the
+    /// identity. Constant-time inversion via Fermat.
+    fn affine_x_ct<T: ConstantTimeInt>(f: &FieldCt<T>, pt: &PointCt<'_, T>) -> Option<T> {
+        let zinv = Option::from(f.inv_fermat(&pt.z))?;
+        Some(f.into_raw(&f.mul(&pt.x, &zinv)))
+    }
+
+    /// **Constant-time** ECDSA signing over curve `C` with the Ct
+    /// backend `T`, given the nonce `k`. The secret scalar multiply
+    /// `k·G` uses RCB complete formulas on the `Ct` modmath surface,
+    /// and `k⁻¹`, `s` run through `FieldCt` — no secret-dependent
+    /// branches. Same slice/`false` contract as
+    /// [`sign_prehashed_with_k`]; `k` must still be unique and
+    /// unpredictable (use [`sign_prehashed_ct`] for RFC 6979).
+    ///
+    /// Experimental — see the [module warning](self).
+    #[must_use]
+    pub fn sign_prehashed_ct_with_k<C: Curve, T: ConstantTimeInt>(
+        private_key: &[u8],
+        digest: &[u8],
+        k: &[u8],
+        out_r: &mut [u8],
+        out_s: &mut [u8],
+    ) -> bool {
+        const {
+            assert!(
+                core::mem::size_of::<T>() >= C::ELEM_BYTES,
+                "backend type narrower than the curve's field element"
+            );
+            assert!(
+                C::P.len() == C::ELEM_BYTES
+                    && C::A.len() == C::ELEM_BYTES
+                    && C::B.len() == C::ELEM_BYTES
+                    && C::N.len() == C::ELEM_BYTES
+                    && C::GX.len() == C::ELEM_BYTES
+                    && C::GY.len() == C::ELEM_BYTES,
+                "Curve constants must all be exactly ELEM_BYTES long"
+            );
+        }
+        let eb = C::ELEM_BYTES;
+        if private_key.len() != eb
+            || k.len() != eb
+            || out_r.len() != eb
+            || out_s.len() != eb
+            || digest.is_empty()
+        {
+            return false;
+        }
+        let p = from_be::<T>(C::P);
+        let n = from_be::<T>(C::N);
+        let zero = T::zero();
+
+        let d = from_be::<T>(private_key);
+        let k_int = from_be::<T>(k);
+        // d and k are secret — validate them in constant time (the
+        // public r/s zero-checks below stay ordinary `==`).
+        let d_ok = !d.ct_is_zero() & d.ct_lt(&n);
+        let k_ok = !k_int.ct_is_zero() & k_int.ct_lt(&n);
+        if !bool::from(d_ok & k_ok) {
+            return false;
+        }
+
+        let (Some(fp), Some(fn_)) = (FieldCt::new(p), FieldCt::new(n)) else {
+            return false;
+        };
+        let a_res = fp.reduce(&from_be::<T>(C::A));
+        let b_res = fp.reduce(&from_be::<T>(C::B));
+        let b3 = fp.add(&fp.add(&b_res, &b_res), &b_res);
+        let g = PointCt {
+            x: fp.reduce(&from_be::<T>(C::GX)),
+            y: fp.reduce(&from_be::<T>(C::GY)),
+            z: fp.one(),
+        };
+
+        // r = x(k·G) mod n.
+        let kg = scalar_mul_ct(&fp, &a_res, &b3, eb * 8, &k_int, &g);
+        let Some(rx) = affine_x_ct(&fp, &kg) else {
+            return false;
+        };
+        let r = fn_.into_raw(&fn_.reduce(&rx));
+        if r == zero {
+            return false;
+        }
+
+        // s = k⁻¹ · (e + r·d) mod n.
+        let e = fn_.reduce(&hash_to_scalar::<T>(digest, bitlen_be(C::N)));
+        let Some(k_inv) = Option::from(fn_.inv_fermat(&fn_.reduce(&k_int))) else {
+            return false;
+        };
+        let rd = fn_.mul(&fn_.reduce(&r), &fn_.reduce(&d));
+        let s = fn_.into_raw(&fn_.mul(&k_inv, &fn_.add(&e, &rd)));
+        if s == zero {
+            return false;
+        }
+
+        to_be::<T>(&r, out_r);
+        to_be::<T>(&s, out_s);
+        true
+    }
+
+    /// **Constant-time** ECDSA signing with an RFC 6979 deterministic
+    /// nonce. The nonce is derived on the Nct backend `T` (that part
+    /// is not yet constant-time — a documented residual gap), then the
+    /// secret signature math runs constant-time on the Ct backend
+    /// `Tct` via [`sign_prehashed_ct_with_k`]. `M` is the HMAC.
+    ///
+    /// Experimental — see the [module warning](self).
+    #[must_use]
+    pub fn sign_prehashed_ct<
+        C: Curve,
+        T: UnsignedModularInt,
+        Tct: ConstantTimeInt,
+        M: digest::KeyInit + digest::Mac,
+    >(
+        private_key: &[u8],
+        digest: &[u8],
+        out_r: &mut [u8],
+        out_s: &mut [u8],
+    ) -> bool {
+        let eb = C::ELEM_BYTES;
+        let mut k = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
+        if !derive_nonce_rfc6979::<C, T, M>(private_key, digest, &mut k[..eb]) {
+            return false;
+        }
+        sign_prehashed_ct_with_k::<C, Tct>(private_key, digest, &k[..eb], out_r, out_s)
     }
 }
 
