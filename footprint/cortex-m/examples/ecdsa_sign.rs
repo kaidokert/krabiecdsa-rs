@@ -1,6 +1,8 @@
-//! ECDSA signing footprint (P-256, u32, constant-time RFC 6979).
-//! Measures the incremental cost of one `SigningKey::sign_prehashed`
-//! over the shared baseline. Experimental signing path.
+//! ECDSA signing footprint (P-256, u32, RFC 6979). Measures the
+//! incremental cost of one `SigningKey::sign_prehashed` over the shared
+//! baseline. The signature math is constant-time; RFC 6979 nonce
+//! derivation runs on the Nct backend (the documented residual gap).
+//! Experimental signing path.
 
 #![no_main]
 #![no_std]
@@ -30,7 +32,14 @@ fn main() -> ! {
             };
             let mut r = [0u8; 32];
             let mut s = [0u8; 32];
-            key.sign_prehashed::<Nct, CtBackend, Hmac<Sha256>>(&fixture::DIGEST, &mut r, &mut s)
+            let ok =
+                key.sign_prehashed::<Nct, CtBackend, Hmac<Sha256>>(&fixture::DIGEST, &mut r, &mut s);
+            // Keep the serialized signature observable: under LTO +
+            // opt-level="z" the optimizer could otherwise discard the
+            // r/s write-back and undercount the measured work.
+            core::hint::black_box(&r);
+            core::hint::black_box(&s);
+            ok
         },
         "sign-u32",
     );
