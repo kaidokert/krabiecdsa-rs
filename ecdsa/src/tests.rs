@@ -476,3 +476,55 @@ mod p384_tests {
         assert!(!verify_for_curve::<P384, U384>(&PUB, &short, &R, &S));
     }
 }
+
+// RustCrypto PrehashSigner round-trip: our signer produces the RFC
+// 6979 signature via the trait, our PrehashVerifier accepts it.
+#[cfg(feature = "experimental-signing")]
+mod rustcrypto_signing {
+    use super::*;
+    use crate::dangerous::PrehashSigningKey;
+    use crate::p256::{P256, VerifyingKey};
+    use hmac::Hmac;
+    use sha2::Sha256;
+    use signature::hazmat::{PrehashSigner, PrehashVerifier};
+
+    type U256Ct = FixedUInt<u32, 8, const_num_traits::Ct>;
+
+    // RFC 6979 §A.2.5 P-256/SHA-256 "sample".
+    const D: [u8; 32] = hx("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721");
+    const PUB: [u8; 65] = hx(
+        "0460fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb67903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299",
+    );
+    const DIGEST: [u8; 32] = hx("af2bdbe1aa9b6ec1e2ade1d694f41fc71a831d0268e9891562113d8a62add1bf");
+    const RS: [u8; 64] = hx(
+        "efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8",
+    );
+
+    #[test]
+    fn prehash_signer_roundtrip() {
+        let signer = PrehashSigningKey::<P256, U256, U256Ct, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        let sig: [u8; 64] = signer.sign_prehash(&DIGEST).expect("sign");
+        assert_eq!(sig, RS);
+
+        let verifier = VerifyingKey::<U256>::from_sec1_bytes(PUB);
+        assert!(verifier.verify_prehash(&DIGEST, &sig).is_ok());
+
+        let mut pk = [0u8; 65];
+        assert!(signer.verifying_key_sec1(&mut pk));
+        assert_eq!(pk, PUB);
+    }
+
+    #[test]
+    fn rejects_out_of_range_keys() {
+        // d = 0 and d = n are rejected at construction (constant-time
+        // range check), unlike the late-bound SigningKey which defers to
+        // use-time rejection.
+        type K = PrehashSigningKey<P256, U256, U256Ct, Hmac<Sha256>>;
+        const N: [u8; 32] = hx("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
+        assert!(K::from_bytes(&[0u8; 32]).is_none());
+        assert!(K::from_bytes(&N).is_none());
+        // wrong length is still rejected by the inner SigningKey.
+        assert!(K::from_bytes(&D[..31]).is_none());
+        assert!(K::from_bytes(&D).is_some());
+    }
+}

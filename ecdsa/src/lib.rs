@@ -320,6 +320,34 @@ macro_rules! define_curve {
                     }
                 }
             }
+
+            /// RustCrypto signer: `sign_prehash` returns the P1363
+            /// `r || s` (fixed `2·ELEM_BYTES`), RFC 6979-deterministic.
+            /// The signature arithmetic is constant-time, but RFC 6979
+            /// nonce derivation still runs on the Nct backend `T` (the
+            /// documented residual timing gap). Experimental — see
+            /// [`dangerous`](crate::dangerous).
+            #[cfg(feature = "experimental-signing")]
+            impl<T, Tct, M> signature::hazmat::PrehashSigner<[u8; 2 * $eb]>
+                for crate::dangerous::PrehashSigningKey<$marker, T, Tct, M>
+            where
+                T: UnsignedModularInt,
+                Tct: crate::dangerous::ConstantTimeInt,
+                M: digest::KeyInit + digest::Mac,
+            {
+                fn sign_prehash(
+                    &self,
+                    prehash: &[u8],
+                ) -> Result<[u8; 2 * $eb], signature::Error> {
+                    let mut sig = [0u8; 2 * $eb];
+                    let (r, s) = sig.split_at_mut($eb);
+                    if self.sign_prehashed(prehash, r, s) {
+                        Ok(sig)
+                    } else {
+                        Err(signature::Error::new())
+                    }
+                }
+            }
         }
     };
 }
@@ -1452,6 +1480,65 @@ pub mod dangerous {
             to_be::<Tct>(&qx, &mut out[1..1 + eb]);
             to_be::<Tct>(&qy, &mut out[1 + eb..1 + 2 * eb]);
             true
+        }
+    }
+
+    /// Zero-size marker binding the backends/HMAC without owning them
+    /// (so auto traits stay unconditional), factored out to keep the
+    /// struct field readable.
+    type BackendMarker<T, Tct, M> = core::marker::PhantomData<fn() -> (T, Tct, M)>;
+
+    /// A [`SigningKey`] with its backends and HMAC bound, so it can
+    /// carry the RustCrypto `signature::hazmat::PrehashSigner` impl
+    /// (which has no room for per-call type parameters). The impl is
+    /// emitted per curve because the signature is a fixed
+    /// `[u8; 2·ELEM_BYTES]` — the same reason
+    /// [`PrehashVerifier`](signature::hazmat::PrehashVerifier) lives
+    /// in the curve modules. `T` is the Nct nonce backend, `Tct` the
+    /// Ct math backend, `M` the HMAC.
+    ///
+    /// Experimental — see the [module warning](self).
+    pub struct PrehashSigningKey<C: Curve, T, Tct, M> {
+        key: SigningKey<C>,
+        _p: BackendMarker<T, Tct, M>,
+    }
+
+    impl<C: Curve, T: UnsignedModularInt, Tct: ConstantTimeInt, M: digest::KeyInit + digest::Mac>
+        PrehashSigningKey<C, T, Tct, M>
+    {
+        /// Wrap a private scalar (see [`SigningKey::from_bytes`]).
+        ///
+        /// Unlike [`SigningKey`] — whose backend is bound late, at sign
+        /// time — this key is fully monomorphized over the Ct backend
+        /// `Tct`, so it can reject `d ∉ [1, n-1]` eagerly here. The check
+        /// runs in constant time (the scalar is secret); it returns
+        /// `None` for out-of-range keys instead of deferring to the
+        /// use-time rejection the raw signing functions already perform.
+        #[must_use]
+        pub fn from_bytes(private_key: &[u8]) -> Option<Self> {
+            let key = SigningKey::from_bytes(private_key)?;
+            let d = from_be::<Tct>(private_key);
+            let n = from_be::<Tct>(C::N);
+            if !bool::from(!d.ct_is_zero() & d.ct_lt(&n)) {
+                return None;
+            }
+            Some(Self {
+                key,
+                _p: core::marker::PhantomData,
+            })
+        }
+
+        /// Sign into `out_r` / `out_s` (see [`SigningKey::sign_prehashed`]).
+        #[must_use]
+        pub fn sign_prehashed(&self, digest: &[u8], out_r: &mut [u8], out_s: &mut [u8]) -> bool {
+            self.key.sign_prehashed::<T, Tct, M>(digest, out_r, out_s)
+        }
+
+        /// Derive the SEC1 public key (see
+        /// [`SigningKey::verifying_key_sec1`]).
+        #[must_use]
+        pub fn verifying_key_sec1(&self, out: &mut [u8]) -> bool {
+            self.key.verifying_key_sec1::<Tct>(out)
         }
     }
 }
