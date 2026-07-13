@@ -694,29 +694,29 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
     fn_.reduce(&x_affine) == r_res
 }
 
-/// **Proof-of-concept ECDSA signing — NOT production-safe. Do not use
-/// on real keys.**
+/// **Experimental ECDSA signing — NOT production-safe. Do not use on
+/// real keys.**
 ///
-/// This module exists to prove the signing math is correct against
-/// canonical fixed vectors (RFC 6979 §A.2.5), nothing more. It is
-/// **off by default** behind the `experimental-signing` cargo feature and gated
-/// behind this deliberately-named module. Two properties a real
-/// signer needs and this does NOT have:
+/// Off by default behind the `experimental-signing` cargo feature and
+/// gated behind this deliberately-named module.
+/// [`dangerous::sign_prehashed`] derives its nonce deterministically
+/// per RFC 6979 — no reuse or bias; [`dangerous::sign_prehashed_with_k`]
+/// is the lower primitive that still takes a caller `k`.
 ///
-/// - **The nonce is caller-supplied, not derived.** A repeated or
-///   biased `k` leaks the private key outright. A shippable signer
-///   derives `k` deterministically per RFC 6979; that is the
-///   mandatory follow-up before this leaves POC status.
+/// What still keeps this out of production:
+///
 /// - **The arithmetic is variable-time.** It runs on the same
 ///   non-constant-time (`Nct`) modmath surface the verify path uses,
 ///   so the secret scalar and nonce leak through timing. A shippable
 ///   signer runs the secret operations on the `Ct` surface.
+/// - **Unaudited.** Correctness is pinned to RFC 6979 fixed vectors;
+///   that is not a constant-time review.
 ///
-/// Until both are addressed and audited, this is a correctness
-/// demonstrator only.
+/// Until those are addressed, this is a correctness demonstrator only.
 #[cfg(feature = "experimental-signing")]
 pub mod dangerous {
     use super::*;
+    use zeroize::{Zeroize, Zeroizing};
 
     /// Fixed-iteration double-and-add `scalar · base`. Variable-time
     /// (POC only — see the module warning).
@@ -844,6 +844,187 @@ pub mod dangerous {
         to_be::<T>(&r, out_r);
         to_be::<T>(&s, out_s);
         true
+    }
+
+    // RFC 6979 §3.2 HMAC-DRBG. `MAX_HLEN` covers SHA-512 output;
+    // `MAX_QLEN_BYTES` covers the widest curve order this crate would
+    // carry (P-521 = 66 bytes). Fixed stack buffers keep it no-alloc;
+    // the generic HMAC output length is read at runtime and bounded
+    // against MAX_HLEN.
+    const MAX_HLEN: usize = 64;
+    const MAX_QLEN_BYTES: usize = 66;
+
+    /// `HMAC_key(parts…)` into `out`, returning the tag length. `key`
+    /// and `out` must not alias (the K-update steps copy K aside).
+    fn hmac_into<M: digest::KeyInit + digest::Mac>(
+        key: &[u8],
+        parts: &[&[u8]],
+        out: &mut [u8],
+    ) -> Option<usize> {
+        let mut mac = <M as digest::KeyInit>::new_from_slice(key).ok()?;
+        for p in parts {
+            mac.update(p);
+        }
+        let tag = mac.finalize().into_bytes();
+        if tag.len() > out.len() {
+            return None;
+        }
+        out[..tag.len()].copy_from_slice(&tag);
+        Some(tag.len())
+    }
+
+    /// RFC 6979 §3.2 deterministic nonce: the HMAC-DRBG seeded by the
+    /// private key octets and `bits2octets(H(m))`, yielding the first
+    /// candidate in `[1, n−1]`. `M` is the HMAC (e.g. `Hmac<Sha256>`);
+    /// its hash MUST match the one that produced `digest`.
+    ///
+    /// Variable-time (experimental — see the [module warning](self)).
+    fn rfc6979_nonce<C: Curve, T: UnsignedModularInt, M: digest::KeyInit + digest::Mac>(
+        x_octets: &[u8],
+        h1_octets: &[u8],
+        n: &T,
+        qlen: usize,
+    ) -> Option<T> {
+        let hlen = <M as digest::OutputSizeUser>::output_size();
+        if hlen > MAX_HLEN {
+            return None;
+        }
+        let eb = C::ELEM_BYTES;
+        // Secret DRBG state — wiped on every return (incl. `?`) via
+        // Zeroizing's Drop.
+        let mut v = Zeroizing::new([0x01u8; MAX_HLEN]);
+        let mut k = Zeroizing::new([0x00u8; MAX_HLEN]);
+        // Scratch so no HMAC output aliases its own input: the K-update
+        // key is copied here, and V-updates land here before copy-back
+        // (input and output V would otherwise be the same buffer).
+        let mut scratch = Zeroizing::new([0u8; MAX_HLEN]);
+
+        // V = HMAC_K(V) via scratch.
+        let update_v = |k: &[u8], v: &mut [u8], scratch: &mut [u8]| -> Option<()> {
+            hmac_into::<M>(k, &[&v[..hlen]], scratch)?;
+            v[..hlen].copy_from_slice(&scratch[..hlen]);
+            Some(())
+        };
+
+        // K = HMAC_K(V || 0x00 || x || h1); V = HMAC_K(V)
+        scratch[..hlen].copy_from_slice(&k[..hlen]);
+        hmac_into::<M>(
+            &scratch[..hlen],
+            &[&v[..hlen], &[0x00], x_octets, h1_octets],
+            &mut k[..],
+        )?;
+        update_v(&k[..hlen], &mut v[..], &mut scratch[..])?;
+        // K = HMAC_K(V || 0x01 || x || h1); V = HMAC_K(V)
+        scratch[..hlen].copy_from_slice(&k[..hlen]);
+        hmac_into::<M>(
+            &scratch[..hlen],
+            &[&v[..hlen], &[0x01], x_octets, h1_octets],
+            &mut k[..],
+        )?;
+        update_v(&k[..hlen], &mut v[..], &mut scratch[..])?;
+
+        loop {
+            // T = leftmost qlen bits, accumulated hlen bytes at a time.
+            let mut t = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
+            let mut tlen = 0usize;
+            while tlen < eb {
+                update_v(&k[..hlen], &mut v[..], &mut scratch[..])?;
+                let take = core::cmp::min(hlen, eb - tlen);
+                t[tlen..tlen + take].copy_from_slice(&v[..take]);
+                tlen += take;
+            }
+            let cand = hash_to_scalar::<T>(&t[..eb], qlen);
+            if cand != T::zero() && lt(&cand, n) {
+                return Some(cand);
+            }
+            // Candidate out of range (astronomically rare): reseed.
+            scratch[..hlen].copy_from_slice(&k[..hlen]);
+            hmac_into::<M>(&scratch[..hlen], &[&v[..hlen], &[0x00]], &mut k[..])?;
+            update_v(&k[..hlen], &mut v[..], &mut scratch[..])?;
+        }
+    }
+
+    /// The RFC 6979 nonce for `(private_key, digest)`, written
+    /// big-endian to `out_k`. Exposed so the deterministic derivation
+    /// can be checked directly against the RFC vectors. Returns
+    /// `false` on malformed input or an out-of-range key.
+    ///
+    /// Same experimental caveats as the rest of this module.
+    #[must_use]
+    pub fn derive_nonce_rfc6979<
+        C: Curve,
+        T: UnsignedModularInt,
+        M: digest::KeyInit + digest::Mac,
+    >(
+        private_key: &[u8],
+        digest: &[u8],
+        out_k: &mut [u8],
+    ) -> bool {
+        const {
+            assert!(
+                C::ELEM_BYTES <= MAX_QLEN_BYTES,
+                "Curve's ELEM_BYTES exceeds MAX_QLEN_BYTES"
+            );
+        }
+        let eb = C::ELEM_BYTES;
+        if private_key.len() != eb || out_k.len() != eb || digest.is_empty() {
+            return false;
+        }
+        let n = from_be::<T>(C::N);
+        let d = from_be::<T>(private_key);
+        if d == T::zero() || !lt(&d, &n) {
+            return false;
+        }
+        let Some(fn_) = FieldNct::new(n) else {
+            return false;
+        };
+        let qlen = bitlen_be(C::N);
+
+        // h1 = bits2octets(digest) = int2octets(bits2int(digest) mod n).
+        let mut h1 = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
+        let e = fn_.into_raw(&fn_.reduce(&hash_to_scalar::<T>(digest, qlen)));
+        to_be::<T>(&e, &mut h1[..eb]);
+
+        let Some(mut k) = rfc6979_nonce::<C, T, M>(private_key, &h1[..eb], &n, qlen) else {
+            return false;
+        };
+        to_be::<T>(&k, out_k);
+        k.zeroize();
+        true
+    }
+
+    /// Sign `digest` under `private_key` with an **RFC 6979
+    /// deterministic** nonce — no caller-supplied `k`, so the nonce
+    /// cannot be reused or biased by the caller. `M` is the HMAC whose
+    /// hash matches the digest's (e.g. `Hmac<Sha256>` for a SHA-256
+    /// digest).
+    ///
+    /// Still experimental and **not constant-time** — see the
+    /// [module warning](self). Same slice contract, range checks, and
+    /// `false`-on-degenerate behavior as [`sign_prehashed_with_k`];
+    /// the vanishingly rare `r == 0` / `s == 0` resample is not
+    /// implemented (it would thread the DRBG state through signing).
+    #[must_use]
+    pub fn sign_prehashed<C: Curve, T: UnsignedModularInt, M: digest::KeyInit + digest::Mac>(
+        private_key: &[u8],
+        digest: &[u8],
+        out_r: &mut [u8],
+        out_s: &mut [u8],
+    ) -> bool {
+        const {
+            assert!(
+                C::ELEM_BYTES <= MAX_QLEN_BYTES,
+                "Curve's ELEM_BYTES exceeds MAX_QLEN_BYTES"
+            );
+        }
+        let eb = C::ELEM_BYTES;
+        // Zeroizing: the nonce is wiped on the early-return and normal
+        // paths alike.
+        let mut k = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
+        if !derive_nonce_rfc6979::<C, T, M>(private_key, digest, &mut k[..eb]) {
+            return false;
+        }
+        sign_prehashed_with_k::<C, T>(private_key, digest, &k[..eb], out_r, out_s)
     }
 }
 
