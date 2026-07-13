@@ -15,7 +15,11 @@
 #![cfg(feature = "experimental-signing")]
 
 use hmac::Hmac;
-use krabiecdsa::dangerous::{derive_nonce_rfc6979, sign_prehashed, sign_prehashed_with_k};
+use krabiecdsa::const_num_traits::Ct;
+use krabiecdsa::dangerous::{
+    derive_nonce_rfc6979, sign_prehashed, sign_prehashed_ct, sign_prehashed_ct_with_k,
+    sign_prehashed_with_k,
+};
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
 use krabiecdsa::{Curve, UnsignedModularInt, verify_for_curve};
@@ -23,6 +27,9 @@ use sha2::{Sha256, Sha384, Sha512};
 
 type U256 = fixed_bigint::FixedUInt<u32, 8>;
 type U384 = fixed_bigint::FixedUInt<u32, 12>;
+// Ct-personality backends for the constant-time signing path.
+type U256Ct = fixed_bigint::FixedUInt<u32, 8, Ct>;
+type U384Ct = fixed_bigint::FixedUInt<u32, 12, Ct>;
 
 fn hx(s: &str) -> Vec<u8> {
     (0..s.len() / 2)
@@ -159,6 +166,61 @@ fn deterministic_p256_sha512() {
 #[test]
 fn deterministic_p384_sha384() {
     check_deterministic::<P384, U384, Hmac<Sha384>>(D384, &pubkey(QX384, QY384), P384_SHA384, 48);
+}
+
+// The constant-time path (RCB complete formulas on the Ct surface)
+// must produce byte-for-byte the same signatures as the vartime path.
+
+#[test]
+fn ct_with_k_reproduces_rfc_p256() {
+    let d = hx(D256);
+    let pk = pubkey(QX256, QY256);
+    for v in WITHK {
+        let digest = hx(v.digest);
+        let k = hx(v.k);
+        let mut r = [0u8; 32];
+        let mut s = [0u8; 32];
+        assert!(sign_prehashed_ct_with_k::<P256, U256Ct>(
+            &d, &digest, &k, &mut r, &mut s
+        ));
+        assert_eq!(r.to_vec(), hx(v.r), "ct r mismatch for {}", v.digest);
+        assert_eq!(s.to_vec(), hx(v.s), "ct s mismatch for {}", v.digest);
+        assert!(verify_for_curve::<P256, U256>(&pk, &digest, &r, &s));
+    }
+}
+
+#[test]
+fn ct_deterministic_p256_sha256() {
+    let d = hx(D256);
+    let pk = pubkey(QX256, QY256);
+    for v in P256_SHA256 {
+        let digest = hx(v.digest);
+        let mut r = [0u8; 32];
+        let mut s = [0u8; 32];
+        assert!(sign_prehashed_ct::<P256, U256, U256Ct, Hmac<Sha256>>(
+            &d, &digest, &mut r, &mut s
+        ));
+        assert_eq!(r.to_vec(), hx(v.r), "ct r mismatch for {}", v.digest);
+        assert_eq!(s.to_vec(), hx(v.s), "ct s mismatch for {}", v.digest);
+        assert!(verify_for_curve::<P256, U256>(&pk, &digest, &r, &s));
+    }
+}
+
+#[test]
+fn ct_deterministic_p384_sha384() {
+    let d = hx(D384);
+    let pk = pubkey(QX384, QY384);
+    for v in P384_SHA384 {
+        let digest = hx(v.digest);
+        let mut r = [0u8; 48];
+        let mut s = [0u8; 48];
+        assert!(sign_prehashed_ct::<P384, U384, U384Ct, Hmac<Sha384>>(
+            &d, &digest, &mut r, &mut s
+        ));
+        assert_eq!(r.to_vec(), hx(v.r), "ct r mismatch for {}", v.digest);
+        assert_eq!(s.to_vec(), hx(v.s), "ct s mismatch for {}", v.digest);
+        assert!(verify_for_curve::<P384, U384>(&pk, &digest, &r, &s));
+    }
 }
 
 #[test]
