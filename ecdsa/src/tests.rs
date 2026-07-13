@@ -514,4 +514,18 @@ mod rustcrypto_signing {
         assert!(signer.verifying_key_sec1(&mut pk));
         assert_eq!(pk, PUB);
     }
+
+    #[test]
+    fn rejects_out_of_range_keys() {
+        // d = 0 and d = n are rejected at construction (constant-time
+        // range check), unlike the late-bound SigningKey which defers to
+        // use-time rejection.
+        type K = PrehashSigningKey<P256, U256, U256Ct, Hmac<Sha256>>;
+        const N: [u8; 32] = hx("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
+        assert!(K::from_bytes(&[0u8; 32]).is_none());
+        assert!(K::from_bytes(&N).is_none());
+        // wrong length is still rejected by the inner SigningKey.
+        assert!(K::from_bytes(&D[..31]).is_none());
+        assert!(K::from_bytes(&D).is_some());
+    }
 }
