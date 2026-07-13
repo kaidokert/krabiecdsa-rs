@@ -29,6 +29,7 @@ type U256Ct = fixed_bigint::FixedUInt<u32, 8, Ct>;
 type U384Ct = fixed_bigint::FixedUInt<u32, 12, Ct>;
 
 fn hx(s: &str) -> Vec<u8> {
+    assert_eq!(s.len() % 2, 0, "hex vector must have an even length");
     (0..s.len() / 2)
         .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
         .collect()
@@ -79,8 +80,8 @@ const P384_VECS: &[XVec] = &[
 
 /// Both signers reproduce the openssl-verified `(r, s)`, and our
 /// verifier accepts it. Generic over curve `C`, Nct backend `T`, Ct
-/// backend `Tct`, and HMAC `M`, `eb`-byte scalars.
-fn check<C, T, Tct, M>(vectors: &[XVec], eb: usize)
+/// backend `Tct`, and HMAC `M`.
+fn check<C, T, Tct, M>(vectors: &[XVec])
 where
     C: Curve,
     T: UnsignedModularInt,
@@ -93,14 +94,14 @@ where
         let pk = hx(v.pubkey);
         let (want_r, want_s) = (hx(v.r), hx(v.s));
 
-        let mut r = vec![0u8; eb];
-        let mut s = vec![0u8; eb];
+        let mut r = vec![0u8; C::ELEM_BYTES];
+        let mut s = vec![0u8; C::ELEM_BYTES];
         assert!(sign_prehashed::<C, T, M>(&d, &digest, &mut r, &mut s));
         assert_eq!(r, want_r, "vartime r mismatch");
         assert_eq!(s, want_s, "vartime s mismatch");
 
-        let mut rc = vec![0u8; eb];
-        let mut sc = vec![0u8; eb];
+        let mut rc = vec![0u8; C::ELEM_BYTES];
+        let mut sc = vec![0u8; C::ELEM_BYTES];
         assert!(sign_prehashed_ct::<C, T, Tct, M>(
             &d, &digest, &mut rc, &mut sc
         ));
@@ -116,10 +117,10 @@ where
 
 #[test]
 fn openssl_cross_impl_p256() {
-    check::<P256, U256, U256Ct, Hmac<Sha256>>(P256_VECS, 32);
+    check::<P256, U256, U256Ct, Hmac<Sha256>>(P256_VECS);
 }
 
 #[test]
 fn openssl_cross_impl_p384() {
-    check::<P384, U384, U384Ct, Hmac<Sha384>>(P384_VECS, 48);
+    check::<P384, U384, U384Ct, Hmac<Sha384>>(P384_VECS);
 }
