@@ -509,7 +509,6 @@ mod rustcrypto_signing {
         let verifier = VerifyingKey::<U256>::from_sec1_bytes(PUB);
         assert!(verifier.verify_prehash(&DIGEST, &sig).is_ok());
 
-        // derives its own public key
         let mut pk = [0u8; 65];
         assert!(signer.verifying_key_sec1(&mut pk));
         assert_eq!(pk, PUB);
