@@ -1483,6 +1483,11 @@ pub mod dangerous {
         }
     }
 
+    /// Zero-size marker binding the backends/HMAC without owning them
+    /// (so auto traits stay unconditional), factored out to keep the
+    /// struct field readable.
+    type BackendMarker<T, Tct, M> = core::marker::PhantomData<fn() -> (T, Tct, M)>;
+
     /// A [`SigningKey`] with its backends and HMAC bound, so it can
     /// carry the RustCrypto `signature::hazmat::PrehashSigner` impl
     /// (which has no room for per-call type parameters). The impl is
@@ -1493,11 +1498,6 @@ pub mod dangerous {
     /// Ct math backend, `M` the HMAC.
     ///
     /// Experimental — see the [module warning](self).
-    /// Zero-size marker binding the backends/HMAC without owning them
-    /// (so auto traits stay unconditional), factored out to keep the
-    /// struct field readable.
-    type BackendMarker<T, Tct, M> = core::marker::PhantomData<fn() -> (T, Tct, M)>;
-
     pub struct PrehashSigningKey<C: Curve, T, Tct, M> {
         key: SigningKey<C>,
         _p: BackendMarker<T, Tct, M>,
