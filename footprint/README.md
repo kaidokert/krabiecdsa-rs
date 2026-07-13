@@ -9,7 +9,9 @@ ed25519_heapless / rsa_heapless harnesses.
   (semihosting). Run `python3 run_suite.py`; it builds every
   (curve × limb width) combination of the `ecdsa_verify` example plus
   a `baseline` binary, runs them under QEMU, and prints a markdown
-  metrics table. Requires `qemu-system-arm`, `cargo-bloat`, and the
+  metrics table. The `ecdsa_sign` example (P-256, constant-time
+  RFC 6979; `cargo run --example ecdsa_sign`) measures the
+  experimental signer. Requires `qemu-system-arm`, `cargo-bloat`, and the
   thumb targets (`rustup target add thumbv6m-none-eabi
   thumbv7m-none-eabi thumbv7em-none-eabi`).
 - `risc-v/` — RV32IMAC under `qemu-system-riscv32` (sifive_e; no

@@ -28,3 +28,13 @@ Verify-minus-baseline deltas from the emulated harnesses in
 `footprint/` (QEMU for Cortex-M and RV32, simavr for AVR); u8-limb
 backends, secp256k1 (within noise of P-256 throughout), and rough
 cycle/time proxies in the full matrices.
+
+The experimental constant-time signer costs more — RCB complete
+formulas, `FieldCt` arithmetic, and the RFC 6979 HMAC-SHA256 DRBG:
+
+| Target | Op | Curve | .text (KiB) | Stack (bytes) |
+| ------ | -- | ----- | ----------: | ------------: |
+| Cortex-M3 | sign | P-256 (u32) | 12.1 | 3392 |
+
+(`footprint/cortex-m`, `cargo run --example ecdsa_sign`; includes the
+SHA-256/HMAC the deterministic nonce needs.)
