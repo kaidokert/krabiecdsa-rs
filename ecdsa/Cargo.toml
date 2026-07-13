@@ -11,8 +11,8 @@ keywords = ["ecdsa", "p256", "secp256k1", "no_std", "embedded"]
 categories = ["cryptography", "no-std", "no-std::no-alloc", "embedded"]
 
 [dependencies]
-modmath = "0.5"
-const-num-traits = { version = "0.2", default-features = false }
+modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.6" }
+const-num-traits = { git = "https://github.com/kaidokert/num-traits.git", tag = "v0.2.1-alpha.1", default-features = false, features = ["ct"] }
 signature = { version = "3.0", default-features = false }
 zeroize = { version = "1", default-features = false }
 digest = { version = "0.10", default-features = false, features = ["mac"], optional = true }
@@ -27,7 +27,7 @@ subtle = { version = "2.6", default-features = false, optional = true }
 experimental-signing = ["dep:digest", "dep:subtle"]
 
 [dev-dependencies]
-fixed-bigint = { version = "0.5", default-features = false, features = ["cios", "zeroize"] }
+fixed-bigint = { git = "https://github.com/kaidokert/fixed-bigint-rs.git", tag = "v0.6.0-alpha.20", default-features = false, features = ["cios", "zeroize"] }
 sha2 = "0.10"
 hmac = "0.12"
 digest = { version = "0.10", features = ["mac"] }

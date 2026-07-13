@@ -65,6 +65,7 @@ pub trait UnsignedModularInt:
     + const_num_traits::WrappingSub<Output = Self>
     + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
     + const_num_traits::FromByteSlice
+    + const_num_traits::BitsPrecision
     + core::ops::Shr<usize, Output = Self>
     + core::ops::ShrAssign<usize>
     + core::ops::BitAnd<Output = Self>
@@ -92,6 +93,7 @@ impl<T> UnsignedModularInt for T where
         + const_num_traits::WrappingSub<Output = Self>
         + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
         + const_num_traits::FromByteSlice
+        + const_num_traits::BitsPrecision
         + core::ops::Shr<usize, Output = Self>
         + core::ops::ShrAssign<usize>
         + core::ops::BitAnd<Output = Self>
@@ -1111,6 +1113,7 @@ pub mod dangerous {
         + const_num_traits::WrappingAdd<Output = Self>
         + const_num_traits::WrappingSub<Output = Self>
         + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
+        + const_num_traits::BitsPrecision
         + CtIsZero
         + modmath::Parity
         + modmath::WideMul
@@ -1127,6 +1130,7 @@ pub mod dangerous {
             + const_num_traits::WrappingAdd<Output = Self>
             + const_num_traits::WrappingSub<Output = Self>
             + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
+            + const_num_traits::BitsPrecision
             + CtIsZero
             + modmath::Parity
             + modmath::WideMul
