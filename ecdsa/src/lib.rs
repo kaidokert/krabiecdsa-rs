@@ -1417,10 +1417,12 @@ pub mod dangerous {
             })
         }
 
-        /// Sign `digest` with an RFC 6979 nonce, constant-time (see
+        /// Sign `digest` with an RFC 6979 nonce (see
         /// [`sign_prehashed_ct`]). `T` is the Nct backend used for
         /// nonce derivation, `Tct` the Ct backend for the secret math,
-        /// `M` the HMAC.
+        /// `M` the HMAC. The signature arithmetic is constant-time; RFC
+        /// 6979 nonce derivation still runs on the Nct backend `T` and is
+        /// the documented residual timing gap.
         #[must_use]
         pub fn sign_prehashed<
             T: UnsignedModularInt,
@@ -1441,6 +1443,12 @@ pub mod dangerous {
         /// out-of-range scalar.
         #[must_use]
         pub fn verifying_key_sec1<Tct: ConstantTimeInt>(&self, out: &mut [u8]) -> bool {
+            const {
+                assert!(
+                    core::mem::size_of::<Tct>() >= C::ELEM_BYTES,
+                    "backend type narrower than the curve's field element"
+                );
+            }
             let eb = C::ELEM_BYTES;
             if out.len() != 1 + 2 * eb {
                 return false;
