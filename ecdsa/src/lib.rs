@@ -1251,7 +1251,12 @@ pub mod dangerous {
             );
         }
         let eb = C::ELEM_BYTES;
-        if private_key.len() != eb || k.len() != eb || out_r.len() != eb || out_s.len() != eb {
+        if private_key.len() != eb
+            || k.len() != eb
+            || out_r.len() != eb
+            || out_s.len() != eb
+            || digest.is_empty()
+        {
             return false;
         }
         let p = from_be::<T>(C::P);
@@ -1260,7 +1265,11 @@ pub mod dangerous {
 
         let d = from_be::<T>(private_key);
         let k_int = from_be::<T>(k);
-        if d == zero || !lt(&d, &n) || k_int == zero || !lt(&k_int, &n) {
+        // d and k are secret — validate them in constant time (the
+        // public r/s zero-checks below stay ordinary `==`).
+        let d_ok = !d.ct_is_zero() & d.ct_lt(&n);
+        let k_ok = !k_int.ct_is_zero() & k_int.ct_lt(&n);
+        if !bool::from(d_ok & k_ok) {
             return false;
         }
 
