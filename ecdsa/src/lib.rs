@@ -322,8 +322,10 @@ macro_rules! define_curve {
             }
 
             /// RustCrypto signer: `sign_prehash` returns the P1363
-            /// `r || s` (fixed `2·ELEM_BYTES`). Constant-time,
-            /// RFC 6979-deterministic. Experimental — see
+            /// `r || s` (fixed `2·ELEM_BYTES`), RFC 6979-deterministic.
+            /// The signature arithmetic is constant-time, but RFC 6979
+            /// nonce derivation still runs on the Nct backend `T` (the
+            /// documented residual timing gap). Experimental — see
             /// [`dangerous`](crate::dangerous).
             #[cfg(feature = "experimental-signing")]
             impl<T, Tct, M> signature::hazmat::PrehashSigner<[u8; 2 * $eb]>
@@ -1417,10 +1419,12 @@ pub mod dangerous {
             })
         }
 
-        /// Sign `digest` with an RFC 6979 nonce, constant-time (see
+        /// Sign `digest` with an RFC 6979 nonce (see
         /// [`sign_prehashed_ct`]). `T` is the Nct backend used for
         /// nonce derivation, `Tct` the Ct backend for the secret math,
-        /// `M` the HMAC.
+        /// `M` the HMAC. The signature arithmetic is constant-time; RFC
+        /// 6979 nonce derivation still runs on the Nct backend `T` and is
+        /// the documented residual timing gap.
         #[must_use]
         pub fn sign_prehashed<
             T: UnsignedModularInt,
@@ -1441,6 +1445,12 @@ pub mod dangerous {
         /// out-of-range scalar.
         #[must_use]
         pub fn verifying_key_sec1<Tct: ConstantTimeInt>(&self, out: &mut [u8]) -> bool {
+            const {
+                assert!(
+                    core::mem::size_of::<Tct>() >= C::ELEM_BYTES,
+                    "backend type narrower than the curve's field element"
+                );
+            }
             let eb = C::ELEM_BYTES;
             if out.len() != 1 + 2 * eb {
                 return false;
@@ -1497,10 +1507,23 @@ pub mod dangerous {
         PrehashSigningKey<C, T, Tct, M>
     {
         /// Wrap a private scalar (see [`SigningKey::from_bytes`]).
+        ///
+        /// Unlike [`SigningKey`] — whose backend is bound late, at sign
+        /// time — this key is fully monomorphized over the Ct backend
+        /// `Tct`, so it can reject `d ∉ [1, n-1]` eagerly here. The check
+        /// runs in constant time (the scalar is secret); it returns
+        /// `None` for out-of-range keys instead of deferring to the
+        /// use-time rejection the raw signing functions already perform.
         #[must_use]
         pub fn from_bytes(private_key: &[u8]) -> Option<Self> {
+            let key = SigningKey::from_bytes(private_key)?;
+            let d = from_be::<Tct>(private_key);
+            let n = from_be::<Tct>(C::N);
+            if !bool::from(!d.ct_is_zero() & d.ct_lt(&n)) {
+                return None;
+            }
             Some(Self {
-                key: SigningKey::from_bytes(private_key)?,
+                key,
                 _p: core::marker::PhantomData,
             })
         }
