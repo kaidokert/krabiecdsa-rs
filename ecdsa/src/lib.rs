@@ -1337,6 +1337,115 @@ pub mod dangerous {
         }
         sign_prehashed_ct_with_k::<C, Tct>(private_key, digest, &k[..eb], out_r, out_s)
     }
+
+    /// Affine `(X/Z, Y/Z)` (RCB projective), or `None` at the
+    /// identity. Constant-time inversion via Fermat.
+    fn affine_xy_ct<T: ConstantTimeInt>(f: &FieldCt<T>, pt: &PointCt<'_, T>) -> Option<(T, T)> {
+        let zinv = Option::from(f.inv_fermat(&pt.z))?;
+        Some((
+            f.into_raw(&f.mul(&pt.x, &zinv)),
+            f.into_raw(&f.mul(&pt.y, &zinv)),
+        ))
+    }
+
+    /// Widest curve scalar this crate carries (P-384 = 48 bytes); the
+    /// `SigningKey` byte buffer is sized to it and sliced per curve.
+    const MAX_ELEM: usize = 48;
+
+    /// An ECDSA private scalar that **wipes itself on drop**. Owning
+    /// the key in this wrapper (rather than passing raw `&[u8]`) keeps
+    /// the secret in a `Zeroizing` buffer for its whole lifetime.
+    ///
+    /// Curve-fixed (`C`); the arithmetic backends are chosen per call,
+    /// since the key material is personality-agnostic bytes. The
+    /// scalar is stored as bytes rather than a typed `T` so the struct
+    /// stays free of a backend type parameter — same reason ed25519's
+    /// `SigningKey` stores its clamped scalar as bytes.
+    ///
+    /// Experimental — see the [module warning](self).
+    pub struct SigningKey<C: Curve> {
+        d: Zeroizing<[u8; MAX_ELEM]>,
+        _c: core::marker::PhantomData<fn() -> C>,
+    }
+
+    impl<C: Curve> SigningKey<C> {
+        /// Wrap a private scalar (big-endian, `C::ELEM_BYTES` long).
+        /// Returns `None` on the wrong length. The `[1, n−1]` range is
+        /// checked at sign / verifying-key time (it needs a backend).
+        #[must_use]
+        pub fn from_bytes(private_key: &[u8]) -> Option<Self> {
+            const {
+                assert!(
+                    C::ELEM_BYTES <= MAX_ELEM,
+                    "Curve's ELEM_BYTES exceeds MAX_ELEM"
+                );
+            }
+            if private_key.len() != C::ELEM_BYTES {
+                return None;
+            }
+            let mut d = Zeroizing::new([0u8; MAX_ELEM]);
+            d[..C::ELEM_BYTES].copy_from_slice(private_key);
+            Some(Self {
+                d,
+                _c: core::marker::PhantomData,
+            })
+        }
+
+        /// Sign `digest` with an RFC 6979 nonce, constant-time (see
+        /// [`sign_prehashed_ct`]). `T` is the Nct backend used for
+        /// nonce derivation, `Tct` the Ct backend for the secret math,
+        /// `M` the HMAC.
+        #[must_use]
+        pub fn sign_prehashed<
+            T: UnsignedModularInt,
+            Tct: ConstantTimeInt,
+            M: digest::KeyInit + digest::Mac,
+        >(
+            &self,
+            digest: &[u8],
+            out_r: &mut [u8],
+            out_s: &mut [u8],
+        ) -> bool {
+            sign_prehashed_ct::<C, T, Tct, M>(&self.d[..C::ELEM_BYTES], digest, out_r, out_s)
+        }
+
+        /// Derive the SEC1-uncompressed public key `0x04 || X || Y`
+        /// into `out` (`1 + 2·C::ELEM_BYTES` bytes) via a constant-time
+        /// `d·G`. Returns `false` on the wrong output length or an
+        /// out-of-range scalar.
+        #[must_use]
+        pub fn verifying_key_sec1<Tct: ConstantTimeInt>(&self, out: &mut [u8]) -> bool {
+            let eb = C::ELEM_BYTES;
+            if out.len() != 1 + 2 * eb {
+                return false;
+            }
+            let p = from_be::<Tct>(C::P);
+            let n = from_be::<Tct>(C::N);
+            let d = from_be::<Tct>(&self.d[..eb]);
+            if !bool::from(!d.ct_is_zero() & d.ct_lt(&n)) {
+                return false;
+            }
+            let Some(fp) = FieldCt::new(p) else {
+                return false;
+            };
+            let a_res = fp.reduce(&from_be::<Tct>(C::A));
+            let b_res = fp.reduce(&from_be::<Tct>(C::B));
+            let b3 = fp.add(&fp.add(&b_res, &b_res), &b_res);
+            let g = PointCt {
+                x: fp.reduce(&from_be::<Tct>(C::GX)),
+                y: fp.reduce(&from_be::<Tct>(C::GY)),
+                z: fp.one(),
+            };
+            let q = scalar_mul_ct(&fp, &a_res, &b3, eb * 8, &d, &g);
+            let Some((qx, qy)) = affine_xy_ct(&fp, &q) else {
+                return false;
+            };
+            out[0] = 0x04;
+            to_be::<Tct>(&qx, &mut out[1..1 + eb]);
+            to_be::<Tct>(&qy, &mut out[1 + eb..1 + 2 * eb]);
+            true
+        }
+    }
 }
 
 #[cfg(test)]
