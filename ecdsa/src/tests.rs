@@ -6,6 +6,11 @@ type U256 = FixedUInt<u32, 8>;
 type U384 = FixedUInt<u32, 12>;
 // Oversized backend: proves the verifier is width-agnostic.
 type U512 = FixedUInt<u32, 16>;
+// Constant-time carriers: prove verify runs on the `Ct` personality,
+// not just `Nct` — the single-carrier path a downstream Ct-everywhere
+// build needs.
+type U256Ct = FixedUInt<u32, 8, const_num_traits::Ct>;
+type U384Ct = FixedUInt<u32, 12, const_num_traits::Ct>;
 
 /// One openssl-produced known-good signature plus the curve's
 /// precomputed `n − s` (for the malleability-acceptance check).
@@ -20,7 +25,7 @@ struct Vector {
 /// The standard accept/reject battery, generic over curve and
 /// backend: every verify-path rejection case that can be exercised
 /// without curve-specific data lives here.
-fn suite<C: Curve, T: UnsignedModularInt>(v: &Vector) {
+fn suite<C: Curve, T: VerifyBackend>(v: &Vector) {
     let ok = verify_for_curve::<C, T>(v.pubkey, v.digest, v.r, v.s);
     assert!(ok, "known-good vector must verify");
 
@@ -229,6 +234,29 @@ mod p256_tests {
     }
 
     #[test]
+    fn full_suite_ct_backend() {
+        // Same accept/reject battery on the constant-time carrier.
+        suite::<P256, U256Ct>(&VEC);
+    }
+
+    #[test]
+    fn verifying_key_ct_backend() {
+        // The exact typed surface a Ct-everywhere consumer uses:
+        // VerifyingKey<Ct>::from_sec1_bytes + PrehashVerifier.
+        use crate::p256::VerifyingKey;
+        use signature::hazmat::PrehashVerifier;
+        let key = VerifyingKey::<U256Ct>::from_sec1_bytes(PUB);
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(&R);
+        sig[32..].copy_from_slice(&S);
+        assert!(key.verify_prehash(&DIGEST, &sig).is_ok());
+        // Tampered digest still rejects on the Ct path.
+        let mut bad = DIGEST;
+        bad[0] ^= 1;
+        assert!(key.verify_prehash(&bad, &sig).is_err());
+    }
+
+    #[test]
     fn high_s_vector_verifies() {
         assert!(verify_for_curve::<P256, U256>(&PUB2, &DIGEST2, &R2, &S2));
     }
@@ -415,6 +443,11 @@ mod p384_tests {
     #[test]
     fn full_suite() {
         suite::<P384, U384>(&VEC);
+    }
+
+    #[test]
+    fn full_suite_ct_backend() {
+        suite::<P384, U384Ct>(&VEC);
     }
 
     #[test]

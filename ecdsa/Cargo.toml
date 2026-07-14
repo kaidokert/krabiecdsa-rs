@@ -16,7 +16,10 @@ const-num-traits = { git = "https://github.com/kaidokert/num-traits.git", tag = 
 signature = { version = "3.0", default-features = false }
 zeroize = { version = "1", default-features = false }
 digest = { version = "0.10", default-features = false, features = ["mac"], optional = true }
-subtle = { version = "2.6", default-features = false, optional = true }
+# Non-optional: the constant-time (`Ct`) verify path (personality-generic
+# VerifyingKey) needs `subtle`'s bounds unconditionally, and modmath's
+# FieldCt already pulls it into the graph, so this adds no new crate.
+subtle = { version = "2.6", default-features = false }
 
 [features]
 # EXPERIMENTAL, off by default: proof-of-concept ECDSA signing (see the
@@ -24,7 +27,7 @@ subtle = { version = "2.6", default-features = false, optional = true }
 # — the name stays `experimental-` until the sign path is constant-time,
 # RFC 6979-deterministic, and audited. The no-feature build carries none
 # of it and stays verify-only.
-experimental-signing = ["dep:digest", "dep:subtle"]
+experimental-signing = ["dep:digest"]
 
 [dev-dependencies]
 fixed-bigint = { git = "https://github.com/kaidokert/fixed-bigint-rs.git", tag = "v0.6.0-alpha.21", default-features = false, features = ["cios", "zeroize"] }

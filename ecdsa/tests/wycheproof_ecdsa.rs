@@ -16,7 +16,7 @@
 use krabiecdsa::k256::K256;
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
-use krabiecdsa::{Curve, UnsignedModularInt, verify_for_curve};
+use krabiecdsa::{Curve, VerifyBackend, verify_for_curve};
 use sha2::{Digest, Sha256, Sha384};
 use wycheproof::TestResult;
 use wycheproof::ecdsa::{TestName, TestSet};
@@ -24,7 +24,7 @@ use wycheproof::ecdsa::{TestName, TestSet};
 type U256 = fixed_bigint::FixedUInt<u32, 8>;
 type U384 = fixed_bigint::FixedUInt<u32, 12>;
 
-fn run<C: Curve, T: UnsignedModularInt>(name: TestName, hash: fn(&[u8]) -> Vec<u8>) {
+fn run<C: Curve, T: VerifyBackend>(name: TestName, hash: fn(&[u8]) -> Vec<u8>) {
     let set = TestSet::load(name).expect("wycheproof corpus failed to load");
 
     let mut ran = 0usize;

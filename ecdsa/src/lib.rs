@@ -26,7 +26,7 @@
 //! so the arithmetic uses the variable-time (`Nct`) modmath surface
 //! throughout.
 
-use modmath::{FieldNct, ResidueNct};
+use modmath::{FieldCt, FieldNct, ResidueCt, ResidueNct};
 
 // [`UnsignedModularInt`]'s supertraits are spelled in these crates'
 // vocabularies, which makes their versions part of this crate's public
@@ -35,7 +35,6 @@ use modmath::{FieldNct, ResidueNct};
 // separately-versioned dependencies that may fail to unify.
 pub use const_num_traits;
 pub use modmath;
-#[cfg(feature = "experimental-signing")]
 pub use subtle;
 pub use zeroize;
 
@@ -256,7 +255,7 @@ macro_rules! define_curve {
 
             $(#[$fn_doc])*
             #[must_use]
-            pub fn verify_prehashed<T: UnsignedModularInt>(
+            pub fn verify_prehashed<T: VerifyBackend>(
                 pubkey: &[u8; PUBKEY_BYTES],
                 digest: &[u8; $db],
                 r: &[u8; $eb],
@@ -271,7 +270,7 @@ macro_rules! define_curve {
             /// the plain [`verify_prehashed`] function is the native
             /// API.
             #[derive(Copy, Clone, PartialEq, Eq)]
-            pub struct VerifyingKey<T: UnsignedModularInt> {
+            pub struct VerifyingKey<T: VerifyBackend> {
                 sec1: [u8; PUBKEY_BYTES],
                 // fn() -> T rather than T: the key names a backend,
                 // it doesn't own one, so auto traits (Send/Sync) hold
@@ -280,7 +279,7 @@ macro_rules! define_curve {
                 _backend: core::marker::PhantomData<fn() -> T>,
             }
 
-            impl<T: UnsignedModularInt> VerifyingKey<T> {
+            impl<T: VerifyBackend> VerifyingKey<T> {
                 /// Wrap SEC1 uncompressed bytes (`0x04 || X || Y`).
                 /// No validation happens here — the point is checked
                 /// on every verify, which returns `Err` for a key
@@ -302,7 +301,7 @@ macro_rules! define_curve {
             /// [`verify_for_curve`] for the truncation rule);
             /// `signature` is IEEE P1363 `r || s`, fixed-width. Any
             /// other signature length is an error.
-            impl<T: UnsignedModularInt, S: AsRef<[u8]>>
+            impl<T: VerifyBackend, S: AsRef<[u8]>>
                 signature::hazmat::PrehashVerifier<S> for VerifyingKey<T>
             {
                 fn verify_prehash(
@@ -430,16 +429,208 @@ define_curve! {
     }
 }
 
-/// Jacobian projective point over the field `p`. The identity is
-/// encoded as `Z == 0` (X, Y then carry no information).
-#[derive(Clone)]
-struct Point<'f, T: UnsignedModularInt> {
-    x: ResidueNct<'f, T>,
-    y: ResidueNct<'f, T>,
-    z: ResidueNct<'f, T>,
+/// The field-operation surface the curve arithmetic consumes,
+/// abstracted over personality so the verify path runs on either the
+/// non-constant-time field ([`FieldNct`], the default) or the
+/// constant-time field ([`FieldCt`]).
+///
+/// Verify operates entirely on public data (signature, public key,
+/// digest), so the `Ct` instantiation is a *performance* trade — the
+/// same result via slower field arithmetic — never a constant-time
+/// guarantee (the variable-time Shamir ladder branches on the public
+/// scalars regardless). It exists so a single-carrier deployment can
+/// reuse one `Ct` backend monomorphization for both sign and verify
+/// instead of paying for a separate `Nct` one.
+///
+/// Implemented directly on `FieldNct`/`FieldCt`; the same-named methods
+/// forward to modmath's inherent ones (inherent methods win in
+/// method-call syntax, so `self.mul(..)` is not self-recursive). The
+/// associated `Backend` recovers the underlying integer `T`, and the
+/// GAT `Residue<'f>` is the field's residue type.
+pub trait VerifyField: Sized {
+    /// The underlying big-integer backend (`T`).
+    type Backend;
+    /// The field's residue element, borrowed from the field for `'f`.
+    type Residue<'f>: Clone + PartialEq
+    where
+        Self: 'f;
+
+    fn reduce<'f>(&'f self, raw: &Self::Backend) -> Self::Residue<'f>;
+    fn mul<'f>(&'f self, a: &Self::Residue<'f>, b: &Self::Residue<'f>) -> Self::Residue<'f>;
+    fn add<'f>(&'f self, a: &Self::Residue<'f>, b: &Self::Residue<'f>) -> Self::Residue<'f>;
+    fn sub<'f>(&'f self, a: &Self::Residue<'f>, b: &Self::Residue<'f>) -> Self::Residue<'f>;
+    fn one(&self) -> Self::Residue<'_>;
+    fn zero(&self) -> Self::Residue<'_>;
+    /// Fermat inversion, `None` for a non-invertible (zero) element.
+    /// The `Ct` field returns `subtle::CtOption`; this normalizes both
+    /// to `Option` (verify inputs are public, so the branch is fine).
+    fn inv_fermat<'f>(&'f self, a: &Self::Residue<'f>) -> Option<Self::Residue<'f>>;
+    #[allow(clippy::wrong_self_convention)]
+    fn into_raw(&self, a: &Self::Residue<'_>) -> Self::Backend;
 }
 
-fn infinity<T: UnsignedModularInt>(f: &FieldNct<T>) -> Point<'_, T> {
+impl<T: UnsignedModularInt> VerifyField for FieldNct<T> {
+    type Backend = T;
+    type Residue<'f>
+        = ResidueNct<'f, T>
+    where
+        Self: 'f;
+
+    #[inline]
+    fn reduce<'f>(&'f self, raw: &T) -> ResidueNct<'f, T> {
+        self.reduce(raw)
+    }
+    #[inline]
+    fn mul<'f>(&'f self, a: &ResidueNct<'f, T>, b: &ResidueNct<'f, T>) -> ResidueNct<'f, T> {
+        self.mul(a, b)
+    }
+    #[inline]
+    fn add<'f>(&'f self, a: &ResidueNct<'f, T>, b: &ResidueNct<'f, T>) -> ResidueNct<'f, T> {
+        self.add(a, b)
+    }
+    #[inline]
+    fn sub<'f>(&'f self, a: &ResidueNct<'f, T>, b: &ResidueNct<'f, T>) -> ResidueNct<'f, T> {
+        self.sub(a, b)
+    }
+    #[inline]
+    fn one(&self) -> ResidueNct<'_, T> {
+        self.one()
+    }
+    #[inline]
+    fn zero(&self) -> ResidueNct<'_, T> {
+        self.zero()
+    }
+    #[inline]
+    fn inv_fermat<'f>(&'f self, a: &ResidueNct<'f, T>) -> Option<ResidueNct<'f, T>> {
+        self.inv_fermat(a)
+    }
+    #[inline]
+    fn into_raw(&self, a: &ResidueNct<'_, T>) -> T {
+        self.into_raw(a)
+    }
+}
+
+impl<T> VerifyField for FieldCt<T>
+where
+    T: Copy
+        + PartialEq
+        + const_num_traits::Zero
+        + const_num_traits::One
+        + const_num_traits::WrappingMul<Output = T>
+        + const_num_traits::WrappingAdd<Output = T>
+        + const_num_traits::WrappingSub<Output = T>
+        + const_num_traits::ops::overflowing::OverflowingAdd<Output = T>
+        + const_num_traits::BitsPrecision
+        + const_num_traits::CtIsZero
+        + core::ops::Shr<usize, Output = T>
+        + core::ops::ShrAssign<usize>
+        + core::ops::BitAnd<Output = T>
+        + modmath::Parity
+        + modmath::WideMul
+        + modmath::CiosMontMulCt
+        + subtle::ConditionallySelectable
+        + subtle::ConstantTimeLess
+        // Carried for the same reason `UnsignedModularInt` carries it:
+        // modmath's `MontStorage` requires `Zeroize` when the graph
+        // enables `modmath/zeroize`, which the residue type then needs.
+        + zeroize::DefaultIsZeroes,
+{
+    type Backend = T;
+    type Residue<'f>
+        = ResidueCt<'f, T>
+    where
+        Self: 'f;
+
+    #[inline]
+    fn reduce<'f>(&'f self, raw: &T) -> ResidueCt<'f, T> {
+        self.reduce(raw)
+    }
+    #[inline]
+    fn mul<'f>(&'f self, a: &ResidueCt<'f, T>, b: &ResidueCt<'f, T>) -> ResidueCt<'f, T> {
+        self.mul(a, b)
+    }
+    #[inline]
+    fn add<'f>(&'f self, a: &ResidueCt<'f, T>, b: &ResidueCt<'f, T>) -> ResidueCt<'f, T> {
+        self.add(a, b)
+    }
+    #[inline]
+    fn sub<'f>(&'f self, a: &ResidueCt<'f, T>, b: &ResidueCt<'f, T>) -> ResidueCt<'f, T> {
+        self.sub(a, b)
+    }
+    #[inline]
+    fn one(&self) -> ResidueCt<'_, T> {
+        self.one()
+    }
+    #[inline]
+    fn zero(&self) -> ResidueCt<'_, T> {
+        self.zero()
+    }
+    #[inline]
+    fn inv_fermat<'f>(&'f self, a: &ResidueCt<'f, T>) -> Option<ResidueCt<'f, T>> {
+        // Ct inv_fermat is `subtle::CtOption`; the caller is public
+        // (verify), so collapsing to `Option` leaks nothing.
+        Option::from(self.inv_fermat(a))
+    }
+    #[inline]
+    fn into_raw(&self, a: &ResidueCt<'_, T>) -> T {
+        self.into_raw(a)
+    }
+}
+
+/// A backend that can drive the verify path on *its own* personality:
+/// maps `T` to the field `Field<T, T::P>` (Nct or Ct) and constructs
+/// it. One blanket impl — no overlapping `Nct`/`Ct` impls (which don't
+/// cohere) — so a single `T: VerifyBackend` bound admits both.
+pub trait VerifyBackend: ScalarBytes + zeroize::DefaultIsZeroes {
+    /// The personality-matched field for this backend.
+    type Field: VerifyField<Backend = Self>;
+    /// Build the field for `modulus`, or `None` if it isn't a valid
+    /// (odd) modulus.
+    fn field(modulus: Self) -> Option<Self::Field>;
+}
+
+impl<T> VerifyBackend for T
+where
+    T: ScalarBytes
+        + zeroize::DefaultIsZeroes
+        + const_num_traits::HasPersonality
+        + const_num_traits::BitsPrecision
+        + const_num_traits::WrappingMul<Output = T>
+        + const_num_traits::WrappingAdd<Output = T>
+        + const_num_traits::WrappingSub<Output = T>
+        + const_num_traits::ops::overflowing::OverflowingAdd<Output = T>
+        + modmath::Parity,
+    modmath::Field<T, <T as const_num_traits::HasPersonality>::P>: VerifyField<Backend = T>,
+{
+    type Field = modmath::Field<T, <T as const_num_traits::HasPersonality>::P>;
+    #[inline]
+    fn field(modulus: T) -> Option<Self::Field> {
+        modmath::Field::<T, <T as const_num_traits::HasPersonality>::P>::new(modulus)
+    }
+}
+
+/// Jacobian projective point over the field `F`. The identity is
+/// encoded as `Z == 0` (X, Y then carry no information).
+// Manual `Clone` (not derived): the derive would demand `F: Clone` on
+// the field type, but only the residues are cloned and they carry the
+// `Clone` bound via the `Residue` GAT.
+struct Point<'f, F: VerifyField + 'f> {
+    x: F::Residue<'f>,
+    y: F::Residue<'f>,
+    z: F::Residue<'f>,
+}
+
+impl<'f, F: VerifyField + 'f> Clone for Point<'f, F> {
+    fn clone(&self) -> Self {
+        Point {
+            x: self.x.clone(),
+            y: self.y.clone(),
+            z: self.z.clone(),
+        }
+    }
+}
+
+fn infinity<F: VerifyField>(f: &F) -> Point<'_, F> {
     Point {
         x: f.one(),
         y: f.one(),
@@ -447,7 +638,7 @@ fn infinity<T: UnsignedModularInt>(f: &FieldNct<T>) -> Point<'_, T> {
     }
 }
 
-fn is_infinity<T: UnsignedModularInt>(f: &FieldNct<T>, pt: &Point<'_, T>) -> bool {
+fn is_infinity<'f, F: VerifyField>(f: &'f F, pt: &Point<'f, F>) -> bool {
     pt.z == f.zero()
 }
 
@@ -459,11 +650,11 @@ fn lt<T: ScalarBytes>(a: &T, b: &T) -> bool {
 }
 
 /// `y² == x³ + ax + b`, for an affine point (`z` assumed 1).
-fn is_on_curve<T: UnsignedModularInt>(
-    f: &FieldNct<T>,
-    pt: &Point<'_, T>,
-    a: &ResidueNct<'_, T>,
-    b: &ResidueNct<'_, T>,
+fn is_on_curve<'f, F: VerifyField>(
+    f: &'f F,
+    pt: &Point<'f, F>,
+    a: &F::Residue<'f>,
+    b: &F::Residue<'f>,
 ) -> bool {
     let y2 = f.mul(&pt.y, &pt.y);
     let x2 = f.mul(&pt.x, &pt.x);
@@ -478,11 +669,7 @@ fn is_on_curve<T: UnsignedModularInt>(
 /// at the cost of the `a·ZZ²` multiply a specialized version would
 /// fold away. A `y == 0` input (its double is the identity) falls out
 /// as `z3 = 2yz = 0`.
-fn double<'f, T: UnsignedModularInt>(
-    f: &'f FieldNct<T>,
-    a: &ResidueNct<'f, T>,
-    pt: &Point<'f, T>,
-) -> Point<'f, T> {
+fn double<'f, F: VerifyField>(f: &'f F, a: &F::Residue<'f>, pt: &Point<'f, F>) -> Point<'f, F> {
     if is_infinity(f, pt) {
         return infinity(f);
     }
@@ -525,12 +712,12 @@ fn double<'f, T: UnsignedModularInt>(
 /// General Jacobian addition (EFD add-2007-bl), with the short-
 /// Weierstrass exceptional cases handled explicitly: identity
 /// operands, `P + P` (dispatches to [`double`]), and `P + (−P) = O`.
-fn add<'f, T: UnsignedModularInt>(
-    f: &'f FieldNct<T>,
-    curve_a: &ResidueNct<'f, T>,
-    a: &Point<'f, T>,
-    b: &Point<'f, T>,
-) -> Point<'f, T> {
+fn add<'f, F: VerifyField>(
+    f: &'f F,
+    curve_a: &F::Residue<'f>,
+    a: &Point<'f, F>,
+    b: &Point<'f, F>,
+) -> Point<'f, F> {
     if is_infinity(f, a) {
         return b.clone();
     }
@@ -579,15 +766,18 @@ fn bit<T: ScalarBytes>(v: &T, i: usize) -> bool {
 /// with a precomputed `G + Q`. Variable-time — both scalars are
 /// public on the verify path. Both scalars are `< n < 2^bits`, so
 /// `bits` iterations cover them regardless of the backend's width.
-fn double_scalar_mul<'f, T: UnsignedModularInt>(
-    f: &'f FieldNct<T>,
-    curve_a: &ResidueNct<'f, T>,
+fn double_scalar_mul<'f, F: VerifyField>(
+    f: &'f F,
+    curve_a: &F::Residue<'f>,
     bits: usize,
-    u1: &T,
-    g: &Point<'f, T>,
-    u2: &T,
-    q: &Point<'f, T>,
-) -> Point<'f, T> {
+    u1: &F::Backend,
+    g: &Point<'f, F>,
+    u2: &F::Backend,
+    q: &Point<'f, F>,
+) -> Point<'f, F>
+where
+    F::Backend: ScalarBytes,
+{
     let gq = add(f, curve_a, g, q);
     let mut acc = infinity(f);
     for i in (0..bits).rev() {
@@ -603,7 +793,7 @@ fn double_scalar_mul<'f, T: UnsignedModularInt>(
 }
 
 /// Affine x-coordinate `X/Z²`, or `None` for the identity.
-fn to_affine_x<T: UnsignedModularInt>(f: &FieldNct<T>, pt: &Point<'_, T>) -> Option<T> {
+fn to_affine_x<'f, F: VerifyField>(f: &'f F, pt: &Point<'f, F>) -> Option<F::Backend> {
     let zinv = f.inv_fermat(&pt.z)?;
     let zinv2 = f.mul(&zinv, &zinv);
     Some(f.into_raw(&f.mul(&pt.x, &zinv2)))
@@ -668,7 +858,7 @@ fn hash_to_scalar<T: ScalarBytes>(digest: &[u8], n_bits: usize) -> T {
 /// `(r, s)` is inherent ECDSA malleability and TLS does not require
 /// low-`s`.
 #[must_use]
-pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
+pub fn verify_for_curve<C: Curve, T: VerifyBackend>(
     pubkey: &[u8],
     digest: &[u8],
     r: &[u8],
@@ -716,7 +906,7 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
 
     // Both moduli are odd curve constants; `None` is unreachable but
     // maps to a clean reject rather than a panic path.
-    let (Some(fp), Some(fn_)) = (FieldNct::new(p), FieldNct::new(n)) else {
+    let (Some(fp), Some(fn_)) = (T::field(p), T::field(n)) else {
         return false;
     };
 
@@ -788,8 +978,8 @@ pub mod dangerous {
         curve_a: &ResidueNct<'f, T>,
         bits: usize,
         scalar: &T,
-        base: &Point<'f, T>,
-    ) -> Point<'f, T> {
+        base: &Point<'f, FieldNct<T>>,
+    ) -> Point<'f, FieldNct<T>> {
         let mut acc = infinity(f);
         for i in (0..bits).rev() {
             acc = double(f, curve_a, &acc);
