@@ -65,6 +65,7 @@ pub trait UnsignedModularInt:
     + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
     + const_num_traits::FromByteSlice
     + const_num_traits::BitsPrecision
+    + const_num_traits::WithPrecision
     + core::ops::Shr<usize, Output = Self>
     + core::ops::ShrAssign<usize>
     + core::ops::BitAnd<Output = Self>
@@ -93,6 +94,7 @@ impl<T> UnsignedModularInt for T where
         + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
         + const_num_traits::FromByteSlice
         + const_num_traits::BitsPrecision
+        + const_num_traits::WithPrecision
         + core::ops::Shr<usize, Output = Self>
         + core::ops::ShrAssign<usize>
         + core::ops::BitAnd<Output = Self>
@@ -521,6 +523,7 @@ where
         + const_num_traits::WrappingSub<Output = T>
         + const_num_traits::ops::overflowing::OverflowingAdd<Output = T>
         + const_num_traits::BitsPrecision
+        + const_num_traits::WithPrecision
         + const_num_traits::CtIsZero
         + core::ops::Shr<usize, Output = T>
         + core::ops::ShrAssign<usize>
@@ -595,6 +598,7 @@ where
         + zeroize::DefaultIsZeroes
         + const_num_traits::HasPersonality
         + const_num_traits::BitsPrecision
+        + const_num_traits::WithPrecision
         + const_num_traits::WrappingMul<Output = T>
         + const_num_traits::WrappingAdd<Output = T>
         + const_num_traits::WrappingSub<Output = T>
@@ -1304,6 +1308,7 @@ pub mod dangerous {
         + const_num_traits::WrappingSub<Output = Self>
         + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
         + const_num_traits::BitsPrecision
+        + const_num_traits::WithPrecision
         + CtIsZero
         + modmath::Parity
         + modmath::WideMul
@@ -1321,6 +1326,7 @@ pub mod dangerous {
             + const_num_traits::WrappingSub<Output = Self>
             + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
             + const_num_traits::BitsPrecision
+            + const_num_traits::WithPrecision
             + CtIsZero
             + modmath::Parity
             + modmath::WideMul
