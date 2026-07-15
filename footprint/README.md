@@ -14,6 +14,10 @@ ed25519_heapless / rsa_heapless harnesses.
   experimental signer. Requires `qemu-system-arm`, `cargo-bloat`, and the
   thumb targets (`rustup target add thumbv6m-none-eabi
   thumbv7m-none-eabi thumbv7em-none-eabi`).
+  The measured examples also support the J-Trace STM32F407VG with
+  `--target thumbv7em-none-eabihf --features jtrace-f407,...`; this path uses
+  RTT and reports stack, raw DWT `dwt_cycles`, and raw `systick_cycles` while
+  preserving the legacy QEMU metric fields.
 - `risc-v/` — RV32IMAC under `qemu-system-riscv32` (sifive_e; no
   exit mechanism, so `qemu_wrapper.py` kills the machine after the
   METRIC line). Run `python3 run_suite.py`; requires

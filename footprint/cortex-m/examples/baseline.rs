@@ -14,5 +14,7 @@ fn main() -> ! {
         || fake_verify(&fixture::PUBKEY, &fixture::DIGEST, &fixture::R, &fixture::S),
         "baseline",
     );
-    loop {}
+    loop {
+        cortex_m::asm::nop();
+    }
 }

@@ -34,16 +34,22 @@ mod fixture {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/p384.rs"));
 }
 
-#[cfg(feature = "curve_p256")]
-use krabiecdsa::p256::P256 as Curve;
 #[cfg(feature = "curve_k256")]
 use krabiecdsa::k256::K256 as Curve;
+#[cfg(feature = "curve_p256")]
+use krabiecdsa::p256::P256 as Curve;
 #[cfg(feature = "curve_p384")]
 use krabiecdsa::p384::P384 as Curve;
 
-#[cfg(all(any(feature = "curve_p256", feature = "curve_k256"), feature = "limb_u8"))]
+#[cfg(all(
+    any(feature = "curve_p256", feature = "curve_k256"),
+    feature = "limb_u8"
+))]
 type Backend = FixedUInt<u8, 32>;
-#[cfg(all(any(feature = "curve_p256", feature = "curve_k256"), feature = "limb_u32"))]
+#[cfg(all(
+    any(feature = "curve_p256", feature = "curve_k256"),
+    feature = "limb_u32"
+))]
 type Backend = FixedUInt<u32, 8>;
 #[cfg(all(feature = "curve_p384", feature = "limb_u8"))]
 type Backend = FixedUInt<u8, 48>;
@@ -68,5 +74,7 @@ fn main() -> ! {
         },
         BACKEND,
     );
-    loop {}
+    loop {
+        cortex_m::asm::nop();
+    }
 }

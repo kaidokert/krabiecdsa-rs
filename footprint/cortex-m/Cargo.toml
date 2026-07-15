@@ -9,6 +9,7 @@ publish = false
 
 [features]
 baseline = []
+jtrace-f407 = ["dep:rtt-target", "cortex-m/critical-section-single-core"]
 # Curve selectors for the unified `ecdsa_verify` example. Pick exactly one.
 curve_p256 = []
 curve_k256 = []
@@ -22,6 +23,7 @@ cortex-m = "0.7"
 cortex-m-rt = "0.7"
 cortex-m-semihosting = "0.5"
 panic-semihosting = { version = "0.6", features = ["exit"] }
+rtt-target = { version = "0.6", optional = true }
 
 fixed-bigint = { version = "0.5.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
 krabiecdsa = { path = "../../ecdsa", features = ["experimental-signing"] }

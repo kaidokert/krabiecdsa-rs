@@ -1,12 +1,12 @@
-//! Footprint-measurement harness for krabiecdsa on Cortex-M under
-//! QEMU. Same shape as the rsa_heapless footprint harness: paint the
-//! stack, run one verify, report high-water mark + approximate cycle
-//! count over semihosting, exit with the verify outcome.
+//! Cortex-M footprint harness for krabiecdsa.
 
 #![no_std]
 
 use core::hint::black_box;
+#[cfg(not(feature = "jtrace-f407"))]
 use cortex_m_semihosting::{debug, hprintln};
+#[cfg(feature = "jtrace-f407")]
+use rtt_target::{rprintln, rtt_init_print};
 
 pub mod cyclecount;
 pub mod stack;
@@ -30,33 +30,55 @@ pub fn target_arch_name() -> &'static str {
 }
 
 pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backend: &str) {
+    #[cfg(feature = "jtrace-f407")]
+    rtt_init_print!();
     paint_stack_inner::<SAFE_ZONE_BYTES>();
     let counter = CycleCounter::new();
     let result = testable();
-    let elapsed = counter.elapsed() / 1000;
+    let measurement = counter.elapsed();
+    let elapsed = measurement.systick / 1000;
     let stack = check_stack_high_water_mark_inner::<SAFE_ZONE_BYTES>();
-    if result {
-        hprintln!("ecdsa ACCEPT");
-    } else {
-        hprintln!("ecdsa REJECT");
+
+    #[cfg(not(feature = "jtrace-f407"))]
+    {
+        if result {
+            hprintln!("ecdsa ACCEPT");
+        } else {
+            hprintln!("ecdsa REJECT");
+        }
+        hprintln!(
+            "METRIC stack:{} cycles:{} target:{} backend:{}",
+            stack,
+            elapsed,
+            target_arch_name(),
+            backend
+        );
+        if result {
+            debug::exit(debug::EXIT_SUCCESS);
+        } else {
+            debug::exit(debug::EXIT_FAILURE);
+        }
     }
-    hprintln!(
-        "METRIC stack:{} cycles:{} target:{} backend:{}",
-        stack,
-        elapsed,
-        target_arch_name(),
-        backend
-    );
-    if result {
-        debug::exit(debug::EXIT_SUCCESS);
-    } else {
-        debug::exit(debug::EXIT_FAILURE);
+
+    #[cfg(feature = "jtrace-f407")]
+    {
+        if result {
+            rprintln!("ecdsa ACCEPT");
+        } else {
+            rprintln!("ecdsa REJECT");
+        }
+        rprintln!(
+            "METRIC stack:{} cycles:{} target:{} backend:{} dwt_cycles:{} systick_cycles:{}",
+            stack,
+            elapsed,
+            target_arch_name(),
+            backend,
+            measurement.dwt,
+            measurement.systick
+        );
     }
 }
 
-/// Baseline stand-in for a verify: touches the same fixture bytes so
-/// the baseline binary carries the harness + fixture data, and the
-/// verify-minus-baseline delta isolates the crypto itself.
 #[inline(never)]
 pub fn fake_verify(pubkey: &[u8], digest: &[u8], r: &[u8], s: &[u8]) -> bool {
     let folded = pubkey[0] ^ digest[0] ^ r[0] ^ s[0] ^ (pubkey.len() as u8);
@@ -64,4 +86,14 @@ pub fn fake_verify(pubkey: &[u8], digest: &[u8], r: &[u8], s: &[u8]) -> bool {
     true
 }
 
+#[cfg(not(feature = "jtrace-f407"))]
 use panic_semihosting as _;
+
+#[cfg(feature = "jtrace-f407")]
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    rprintln!("PANIC: {}", info);
+    loop {
+        cortex_m::asm::nop();
+    }
+}
