@@ -19,6 +19,13 @@ DWT barriers, observable outputs, and a 32-cycle positive-spread gate. An
 obvious early-exit loop is the required timing-negative control. RTT reports
 the configured HCLK and stack high-water mark.
 
+The carrier uses the shared `embedded-measure` paired-suite, DWT, policy, and
+reporting primitives. Its prepared-input path copies raw scalars or constructs
+`SigningKey` values in one local slot before entering the measured region, so
+setup remains outside the declared timing boundary without reintroducing
+address bias. Output includes both the versioned `EM_*` records and the legacy
+`CT_*` compatibility records.
+
 Run at the default 168 MHz HSI/PLL profile:
 
 ```sh
@@ -35,19 +42,21 @@ cargo run --release --no-default-features
 
 The final same-address campaign produced:
 
-- `rfc6979_nonce`: **FAIL**, A 1,234,625 cycles versus B 1,229,364 cycles;
-  stable 5,261-cycle secret-key separation.
-- `ct_sign_fixed_nonce`: **PASS**, 123,154,049–123,154,075 cycles with
-  26-cycle combined spread and overlapping A/B ranges.
-- `signing_key_rfc6979`: **FAIL**, A 124,218,249 cycles versus B 124,212,989
-  cycles; stable 5,260-cycle secret-key separation.
-- `negative_early_exit`: **PASS**, 274-cycle combined separation.
-- Stack high-water mark: 5,212 bytes.
+- `rfc6979_nonce`: **FAIL**, A 1,224,822–1,224,836 cycles versus B
+  1,219,898–1,219,903 cycles; 4,938-cycle combined spread with a stable
+  key-dependent separation.
+- `ct_sign_fixed_nonce`: **PASS**, 122,627,792–122,627,796 cycles with a
+  4-cycle combined spread and overlapping A/B ranges.
+- `signing_key_rfc6979`: **FAIL**, A 123,853,290–123,853,292 cycles versus B
+  123,848,366–123,848,370 cycles; 4,926-cycle combined spread with a stable
+  key-dependent separation.
+- `negative_early_exit`: **PASS**, 253-cycle combined separation.
+- Stack high-water mark: 6,652 bytes.
 - Summary: `passed:2 failed:2`.
 
-Whole signing averages about 124.216 million cycles: approximately 0.7394
-seconds or 1.3525 signing operations per second at the qualified 168 MHz
-clock. The release image contains 27,184 bytes of text and 1,092 bytes of
+Whole signing averages about 123.851 million cycles: approximately 0.7372
+seconds or 1.3565 signing operations per second at the qualified 168 MHz
+clock. The release image contains 38,248 bytes of text and 4,164 bytes of
 static RAM.
 
 Two earlier runs with keys at distinct addresses reproduced a 5,258-cycle
@@ -56,7 +65,8 @@ result missed the gate narrowly at 34 cycles while the A/B ranges overlapped.
 Moving both keys to one address reduced that control to 26 cycles and PASS,
 while the nonce and whole-operation separations remained. This localizes the
 actionable leak to deterministic nonce derivation rather than the CT signature
-math.
+math. The shared-fixture migration tightened that control further to 4 cycles
+and independently preserved the same localization.
 
 CYCCNT is regression evidence, not proof of identical instruction or memory
 traces. The failing whole signer must not be represented as constant-time until

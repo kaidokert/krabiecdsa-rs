@@ -2,19 +2,23 @@
 #![no_std]
 
 use core::hint::black_box;
-use cortex_m::peripheral::DWT;
 use cortex_m_rt::entry;
+use embedded_measure::Unit;
+use embedded_measure::cortex_m::DwtCycleCounter;
+use embedded_measure::paired::MaxSpread;
+use embedded_measure::report::Field;
+use embedded_measure::rtt::print;
+use embedded_measure::suite::{FixtureSpec, PairedSuite, PairedSuiteConfig, PairedSuiteFields};
 use fixed_bigint::FixedUInt;
 use hmac::Hmac;
 use krabiecdsa::const_num_traits::Ct;
 use krabiecdsa::dangerous::{SigningKey, derive_nonce_rfc6979, sign_prehashed_ct_with_k};
 use krabiecdsa::p256::{self, P256};
-use rtt_target::{rprintln, rtt_init_print};
 use sha2::Sha256;
 
 const TRIALS: usize = 4;
-const MAX_POSITIVE_SPREAD: u32 = 32;
-const ORDER: [bool; TRIALS * 2] = [false, true, true, false, true, false, false, true];
+const MAX_POSITIVE_SPREAD: u64 = 32;
+const SUITE: &str = "krabiecdsa-p256-sign";
 const STACK_PAINT: u8 = 0xaa;
 const STACK_SAFE_ZONE: usize = 512;
 
@@ -99,13 +103,6 @@ fn stack_high_water_mark() -> usize {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Samples {
-    a: [u32; TRIALS],
-    b: [u32; TRIALS],
-    outputs_ok: bool,
-}
-
 fn nonce_once(key: &[u8; 32]) -> bool {
     let mut nonce = [0u8; 32];
     let ok = derive_nonce_rfc6979::<P256, Nct, Hmac<Sha256>>(
@@ -139,73 +136,6 @@ fn whole_sign_once(key: &P256SigningKey) -> bool {
     ok
 }
 
-#[inline(always)]
-fn timed(operation: impl FnOnce() -> bool) -> (u32, bool) {
-    cortex_m::interrupt::free(|_| {
-        cortex_m::asm::dsb();
-        cortex_m::asm::isb();
-        let start = DWT::cycle_count();
-        let ok = operation();
-        cortex_m::asm::dsb();
-        cortex_m::asm::isb();
-        (DWT::cycle_count().wrapping_sub(start), ok)
-    })
-}
-
-fn measure_keys(operation: fn(&[u8; 32]) -> bool) -> Samples {
-    let _ = black_box(operation(&KEY_A));
-    let _ = black_box(operation(&KEY_B));
-    let _ = black_box(operation(&KEY_B));
-    let _ = black_box(operation(&KEY_A));
-    let mut samples = Samples {
-        a: [0; TRIALS],
-        b: [0; TRIALS],
-        outputs_ok: true,
-    };
-    let (mut ai, mut bi) = (0, 0);
-    for use_b in ORDER {
-        let mut key = [0u8; 32];
-        key.copy_from_slice(if use_b { &KEY_B } else { &KEY_A });
-        let (cycles, ok) = timed(|| operation(black_box(&key)));
-        samples.outputs_ok &= ok;
-        if use_b {
-            samples.b[bi] = cycles;
-            bi += 1;
-        } else {
-            samples.a[ai] = cycles;
-            ai += 1;
-        }
-    }
-    samples
-}
-
-fn measure_whole(key_a: &P256SigningKey, key_b: &P256SigningKey) -> Samples {
-    let _ = black_box(whole_sign_once(key_a));
-    let _ = black_box(whole_sign_once(key_b));
-    let _ = black_box(whole_sign_once(key_b));
-    let _ = black_box(whole_sign_once(key_a));
-    let mut samples = Samples {
-        a: [0; TRIALS],
-        b: [0; TRIALS],
-        outputs_ok: true,
-    };
-    let (mut ai, mut bi) = (0, 0);
-    for use_b in ORDER {
-        let key_bytes = if use_b { &KEY_B } else { &KEY_A };
-        let key = P256SigningKey::from_bytes(key_bytes).unwrap();
-        let (cycles, ok) = timed(|| whole_sign_once(black_box(&key)));
-        samples.outputs_ok &= ok;
-        if use_b {
-            samples.b[bi] = cycles;
-            bi += 1;
-        } else {
-            samples.a[ai] = cycles;
-            ai += 1;
-        }
-    }
-    samples
-}
-
 #[inline(never)]
 fn negative_early_exit(key: &[u8; 32]) -> bool {
     let mut leading_zeroes = 0usize;
@@ -219,62 +149,14 @@ fn negative_early_exit(key: &[u8; 32]) -> bool {
     true
 }
 
-fn measure_negative() -> Samples {
-    const ZERO: [u8; 32] = [0; 32];
-    let mut samples = Samples {
-        a: [0; TRIALS],
-        b: [0; TRIALS],
-        outputs_ok: true,
-    };
-    let (mut ai, mut bi) = (0, 0);
-    for use_b in ORDER {
-        let key = if use_b { &KEY_A } else { &ZERO };
-        let (cycles, ok) = timed(|| negative_early_exit(key));
-        samples.outputs_ok &= ok;
-        if use_b {
-            samples.b[bi] = cycles;
-            bi += 1;
-        } else {
-            samples.a[ai] = cycles;
-            ai += 1;
-        }
-    }
-    samples
+fn copy_key(input: &[u8; 32]) -> [u8; 32] {
+    let mut key = [0; 32];
+    key.copy_from_slice(input);
+    key
 }
 
-fn bounds(values: &[u32; TRIALS]) -> (u32, u32) {
-    let mut min = u32::MAX;
-    let mut max = 0;
-    for &value in values {
-        min = min.min(value);
-        max = max.max(value);
-    }
-    (min, max)
-}
-
-fn report(name: &str, class: &str, samples: Samples, expect_equal: bool) -> bool {
-    let (a_min, a_max) = bounds(&samples.a);
-    let (b_min, b_max) = bounds(&samples.b);
-    let spread = a_min.min(b_min).abs_diff(a_max.max(b_max));
-    let timing_ok = if expect_equal {
-        spread <= MAX_POSITIVE_SPREAD
-    } else {
-        a_max < b_min || b_max < a_min
-    };
-    let passed = samples.outputs_ok && timing_ok;
-    rprintln!(
-        "CT_RESULT fixture:{} class:{} a_min:{} a_max:{} b_min:{} b_max:{} spread:{} output_ok:{} status:{}",
-        name,
-        class,
-        a_min,
-        a_max,
-        b_min,
-        b_max,
-        spread,
-        samples.outputs_ok as u8,
-        if passed { "PASS" } else { "FAIL" }
-    );
-    passed
+fn prepare_signing_key(input: &[u8; 32]) -> P256SigningKey {
+    P256SigningKey::from_bytes(input).unwrap()
 }
 
 fn preflight(key_bytes: &[u8; 32]) -> Option<P256SigningKey> {
@@ -299,68 +181,114 @@ fn stop() -> ! {
 
 #[entry]
 fn main() -> ! {
-    rtt_init_print!();
+    let mut reporter = embedded_measure::rtt::init_ct_compatible();
     let hclk_hz = configure_clock();
     let mut peripherals = cortex_m::Peripherals::take().unwrap();
-    assert!(DWT::has_cycle_counter());
-    peripherals.DCB.enable_trace();
-    peripherals.DWT.set_cycle_count(0);
-    peripherals.DWT.enable_cycle_counter();
-    cortex_m::asm::dsb();
-    cortex_m::asm::isb();
+    let mut counter = DwtCycleCounter::enable(
+        &mut peripherals.DCB,
+        &mut peripherals.DWT,
+        Some(hclk_hz as u64),
+    )
+    .unwrap();
     paint_stack();
 
     let Some(key_a) = preflight(&KEY_A) else {
-        rprintln!("SETUP_FAIL key:A");
+        print(format_args!("SETUP_FAIL key:A\n"));
         stop();
     };
     let Some(key_b) = preflight(&KEY_B) else {
-        rprintln!("SETUP_FAIL key:B");
+        print(format_args!("SETUP_FAIL key:B\n"));
         stop();
     };
 
-    rprintln!(
-        "CT_BEGIN suite:krabiecdsa-p256-sign carrier:u32x8 clock_profile:{} hclk_hz:{} trials:{} max_positive_spread:{}",
-        CLOCK_PROFILE,
-        hclk_hz,
-        TRIALS,
-        MAX_POSITIVE_SPREAD
-    );
-    let nonce = report(
-        "rfc6979_nonce",
-        "positive-residual-gap",
-        measure_keys(nonce_once),
-        true,
-    );
-    let fixed = report(
-        "ct_sign_fixed_nonce",
-        "positive",
-        measure_keys(fixed_nonce_sign_once),
-        true,
-    );
-    let whole = report(
-        "signing_key_rfc6979",
-        "positive-whole-operation",
-        measure_whole(&key_a, &key_b),
-        true,
-    );
-    let negative = report("negative_early_exit", "negative", measure_negative(), false);
+    let _ = black_box((&key_a, &key_b));
+    let run_fields = [
+        Field::token("carrier", "u32x8"),
+        Field::token("clock_profile", CLOCK_PROFILE),
+        Field::u64("hclk_hz", hclk_hz as u64),
+        Field::u64("trials", TRIALS as u64),
+        Field::u64("max_positive_spread", MAX_POSITIVE_SPREAD),
+    ];
+    let summary_fields = [Field::token("suite", SUITE)];
+    let mut suite = PairedSuite::<_, _, TRIALS>::start(
+        &mut counter,
+        &mut reporter,
+        PairedSuiteConfig {
+            suite: SUITE,
+            target: "cortex-m4f",
+            board: Some("j-trace-stm32f407vg"),
+            unit: Unit::CoreCycles,
+            frequency_hz: Some(hclk_hz as u64),
+            warmup_blocks: 1,
+            batches: 1,
+            positive_max_spread: MAX_POSITIVE_SPREAD,
+            positive_require_overlap: false,
+            fields: PairedSuiteFields {
+                run: &run_fields,
+                fixture: &[],
+                summary: &summary_fields,
+            },
+        },
+    )
+    .unwrap();
+    suite
+        .fixture_prepared(
+            FixtureSpec {
+                name: "rfc6979_nonce",
+                class: "positive-residual-gap",
+                policy: "max-spread",
+            },
+            &KEY_A,
+            &KEY_B,
+            MaxSpread {
+                ticks: MAX_POSITIVE_SPREAD,
+                require_overlap: false,
+            },
+            copy_key,
+            nonce_once,
+        )
+        .unwrap();
+    suite
+        .positive_prepared(
+            "ct_sign_fixed_nonce",
+            &KEY_A,
+            &KEY_B,
+            copy_key,
+            fixed_nonce_sign_once,
+        )
+        .unwrap();
+    suite
+        .fixture_prepared(
+            FixtureSpec {
+                name: "signing_key_rfc6979",
+                class: "positive-whole-operation",
+                policy: "max-spread",
+            },
+            &KEY_A,
+            &KEY_B,
+            MaxSpread {
+                ticks: MAX_POSITIVE_SPREAD,
+                require_overlap: false,
+            },
+            prepare_signing_key,
+            whole_sign_once,
+        )
+        .unwrap();
+    const ZERO: [u8; 32] = [0; 32];
+    suite
+        .negative("negative_early_exit", &ZERO, &KEY_A, negative_early_exit)
+        .unwrap();
     let stack = stack_high_water_mark();
-    rprintln!(
-        "CT_STACK suite:krabiecdsa-p256-sign carrier:u32x8 bytes:{}",
-        stack
-    );
-    let passed = nonce as u32 + fixed as u32 + whole as u32 + negative as u32;
-    rprintln!(
-        "CT_SUMMARY suite:krabiecdsa-p256-sign passed:{} failed:{}",
-        passed,
-        4 - passed
-    );
+    print(format_args!(
+        "CT_STACK suite:{} carrier:u32x8 bytes:{}\n",
+        SUITE, stack
+    ));
+    suite.finish().unwrap();
     stop();
 }
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    rprintln!("PANIC: {}", info);
+    print(format_args!("PANIC: {}\n", info));
     stop();
 }

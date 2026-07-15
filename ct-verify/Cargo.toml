@@ -2,6 +2,9 @@
 resolver = "2"
 members = ["cyccnt-hardware"]
 
+[patch.crates-io]
+embedded-measure = { path = "../../embedded-measure" }
+
 [profile.release]
 codegen-units = 1
 incremental = false
