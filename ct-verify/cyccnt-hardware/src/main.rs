@@ -267,15 +267,9 @@ fn main() -> ! {
         .negative("negative_early_exit", &ZERO, &KEY_A, negative_early_exit)
         .unwrap();
     let stack = stack_probe.measure();
-    print(format_args!(
-        "CT_STACK suite:{} carrier:u32x8 bytes:{} available:{} painted:{} safe_zone:{} overflowed:{}\n",
-        SUITE,
-        stack.high_water_bytes,
-        stack.available_bytes,
-        stack.painted_bytes,
-        stack.safe_zone_bytes,
-        stack.overflowed as u8,
-    ));
+    suite
+        .stack_measurement(stack, &[Field::token("carrier", "u32x8")])
+        .unwrap();
     assert!(!stack.overflowed);
     suite.finish().unwrap();
     stop();

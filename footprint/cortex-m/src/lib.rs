@@ -4,7 +4,8 @@
 
 use core::hint::black_box;
 #[cfg(not(feature = "jtrace-f407"))]
-use cortex_m_semihosting::{debug, hprintln};
+use cortex_m_semihosting::{debug, hio, hprintln};
+use embedded_measure::report::{Field, Reporter, StackRecord, TextReporter};
 #[cfg(feature = "jtrace-f407")]
 use rtt_target::{rprintln, rtt_init_print};
 
@@ -37,10 +38,21 @@ pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backen
     let result = testable();
     let measurement = counter.elapsed();
     let elapsed = measurement.systick / 1000;
-    let stack = stack_probe.measure().high_water_bytes;
+    let stack = stack_probe.measure();
+    let fields = [
+        Field::token("target", target_arch_name()),
+        Field::token("backend", backend),
+    ];
 
     #[cfg(not(feature = "jtrace-f407"))]
     {
+        TextReporter::new(hio::hstdout().unwrap())
+            .stack_measurement(&StackRecord {
+                benchmark: "krabiecdsa-footprint",
+                measurement: stack,
+                fields: &fields,
+            })
+            .unwrap();
         if result {
             hprintln!("ecdsa ACCEPT");
         } else {
@@ -48,7 +60,7 @@ pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backen
         }
         hprintln!(
             "METRIC stack:{} cycles:{} target:{} backend:{}",
-            stack,
+            stack.high_water_bytes,
             elapsed,
             target_arch_name(),
             backend
@@ -62,6 +74,13 @@ pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backen
 
     #[cfg(feature = "jtrace-f407")]
     {
+        TextReporter::new(embedded_measure::rtt::RttWriter)
+            .stack_measurement(&StackRecord {
+                benchmark: "krabiecdsa-footprint",
+                measurement: stack,
+                fields: &fields,
+            })
+            .unwrap();
         if result {
             rprintln!("ecdsa ACCEPT");
         } else {
@@ -69,7 +88,7 @@ pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backen
         }
         rprintln!(
             "METRIC stack:{} cycles:{} target:{} backend:{} dwt_cycles:{} systick_cycles:{}",
-            stack,
+            stack.high_water_bytes,
             elapsed,
             target_arch_name(),
             backend,

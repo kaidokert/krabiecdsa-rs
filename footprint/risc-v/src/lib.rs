@@ -8,6 +8,7 @@
 
 use core::fmt::Write;
 use core::hint::black_box;
+use embedded_measure::report::{Field, Reporter, StackRecord, TextReporter};
 
 pub mod cyclecount;
 pub mod stack;
@@ -24,9 +25,19 @@ pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backen
     let counter = CycleCounter::new();
     let result = testable();
     let elapsed = counter.elapsed() / 1000;
-    let stack = stack_probe.measure().high_water_bytes;
+    let stack = stack_probe.measure();
 
     let mut w = UartWriter;
+    TextReporter::new(UartWriter)
+        .stack_measurement(&StackRecord {
+            benchmark: "krabiecdsa-footprint",
+            measurement: stack,
+            fields: &[
+                Field::token("target", "riscv32"),
+                Field::token("backend", backend),
+            ],
+        })
+        .unwrap();
     if result {
         let _ = writeln!(w, "ecdsa ACCEPT");
     } else {
@@ -35,7 +46,7 @@ pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backen
     let _ = write!(
         w,
         "METRIC stack:{} cycles:{} target:riscv32 backend:",
-        stack, elapsed
+        stack.high_water_bytes, elapsed
     );
     let _ = w.write_str(backend);
     let _ = w.write_str("\n");

@@ -2,6 +2,7 @@
 #![no_main]
 #![feature(asm_experimental_arch)]
 
+use embedded_measure::report::{Field, StackRecord, write_stack_ufmt};
 use krabiecdsa_footprint_avr as _;
 use krabiecdsa_footprint_avr::fake_verify;
 use krabiecdsa_footprint_avr::stack_measurement::*;
@@ -21,7 +22,19 @@ fn main() -> ! {
     let result = fake_verify(&fixture::PUBKEY, &fixture::DIGEST, &fixture::R, &fixture::S);
     let ticks = counter.elapsed_ticks(&dp.TC1);
     let ms = counter.elapsed_ms(&dp.TC1);
-    let stack_used = measure_stack_usage(&stack_probe);
+    let stack = measure_stack(&stack_probe);
+    write_stack_ufmt(
+        &mut serial,
+        &StackRecord {
+            benchmark: "krabiecdsa-footprint",
+            measurement: stack,
+            fields: &[
+                Field::token("target", "atmega2560"),
+                Field::token("operation", "baseline"),
+            ],
+        },
+    )
+    .unwrap();
 
     if result {
         ufmt::uwriteln!(&mut serial, "ecdsa ACCEPT").ok();
@@ -29,7 +42,12 @@ fn main() -> ! {
         ufmt::uwriteln!(&mut serial, "ecdsa REJECT").ok();
     }
     ufmt::uwriteln!(&mut serial, "Time: {} ms ({} ticks)", ms, ticks).ok();
-    ufmt::uwriteln!(&mut serial, "Max stack usage: {} bytes", stack_used).ok();
+    ufmt::uwriteln!(
+        &mut serial,
+        "Max stack usage: {} bytes",
+        stack.high_water_bytes
+    )
+    .ok();
 
     // Interrupts off before parking: simavr detects sleep-with-
     // interrupts-disabled and exits instead of burning the wrapper
