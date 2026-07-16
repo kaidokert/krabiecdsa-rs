@@ -1,6 +1,6 @@
 [package]
 name = "krabiecdsa"
-version = "0.2.0-alpha.6"
+version = "0.2.0-alpha.7"
 edition = "2024"
 rust-version = "1.87"
 description = "ECDSA signature verification for P-256, secp256k1, and P-384 — no_std, no-alloc, generic over the bigint backend via modmath"
@@ -11,7 +11,7 @@ keywords = ["ecdsa", "p256", "secp256k1", "no_std", "embedded"]
 categories = ["cryptography", "no-std", "no-std::no-alloc", "embedded"]
 
 [dependencies]
-modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.19" }
+modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.0-alpha.cios.22" }
 const-num-traits = { git = "https://github.com/kaidokert/num-traits.git", tag = "v0.2.1-alpha.3", default-features = false, features = ["ct"] }
 signature = { version = "3.0", default-features = false }
 zeroize = { version = "1", default-features = false }
