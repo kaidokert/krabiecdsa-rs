@@ -16,7 +16,10 @@ const _: () = {
     assert!(N == 1, "exactly one `curve_*` feature must be enabled");
 };
 
-use embedded_measure::report::{Field, StackRecord, write_stack_ufmt};
+use embedded_measure::avr::timer_measurement;
+use embedded_measure::report::{
+    Field, MeasurementRecord, StackRecord, write_measurement_ufmt, write_stack_ufmt,
+};
 use fixed_bigint::FixedUInt;
 use krabiecdsa::verify_for_curve;
 use krabiecdsa_footprint_avr as _;
@@ -65,6 +68,18 @@ fn main() -> ! {
         &StackRecord {
             benchmark: "krabiecdsa-footprint",
             measurement: stack,
+            fields: &[
+                Field::token("target", "atmega2560"),
+                Field::token("operation", "verify"),
+            ],
+        },
+    )
+    .unwrap();
+    write_measurement_ufmt(
+        &mut serial,
+        &MeasurementRecord {
+            benchmark: "krabiecdsa-footprint",
+            measurement: timer_measurement(ticks as u64, 15_625, false),
             fields: &[
                 Field::token("target", "atmega2560"),
                 Field::token("operation", "verify"),

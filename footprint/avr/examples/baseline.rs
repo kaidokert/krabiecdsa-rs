@@ -2,7 +2,10 @@
 #![no_main]
 #![feature(asm_experimental_arch)]
 
-use embedded_measure::report::{Field, StackRecord, write_stack_ufmt};
+use embedded_measure::avr::timer_measurement;
+use embedded_measure::report::{
+    Field, MeasurementRecord, StackRecord, write_measurement_ufmt, write_stack_ufmt,
+};
 use krabiecdsa_footprint_avr as _;
 use krabiecdsa_footprint_avr::fake_verify;
 use krabiecdsa_footprint_avr::stack_measurement::*;
@@ -28,6 +31,18 @@ fn main() -> ! {
         &StackRecord {
             benchmark: "krabiecdsa-footprint",
             measurement: stack,
+            fields: &[
+                Field::token("target", "atmega2560"),
+                Field::token("operation", "baseline"),
+            ],
+        },
+    )
+    .unwrap();
+    write_measurement_ufmt(
+        &mut serial,
+        &MeasurementRecord {
+            benchmark: "krabiecdsa-footprint",
+            measurement: timer_measurement(ticks as u64, 15_625, false),
             fields: &[
                 Field::token("target", "atmega2560"),
                 Field::token("operation", "baseline"),

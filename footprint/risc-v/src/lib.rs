@@ -8,13 +8,13 @@
 
 use core::fmt::Write;
 use core::hint::black_box;
-use embedded_measure::report::{Field, Reporter, StackRecord, TextReporter};
+use embedded_measure::Counter;
+use embedded_measure::report::{Field, MeasurementRecord, Reporter, StackRecord, TextReporter};
+use embedded_measure::risc_v::{McycleCounter, MinstretCounter};
 
-pub mod cyclecount;
 pub mod stack;
 pub mod uart;
 
-use cyclecount::CycleCounter;
 use stack::paint_stack;
 use uart::{UartWriter, uart_init};
 
@@ -22,19 +22,47 @@ pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backen
     uart_init();
 
     let stack_probe = paint_stack::<SAFE_ZONE_BYTES>();
-    let counter = CycleCounter::new();
+    let mut counter = McycleCounter::new(None);
+    let mut instructions = MinstretCounter::new(None);
+    let start = counter.now();
+    let instructions_start = instructions.now();
     let result = testable();
-    let elapsed = counter.elapsed() / 1000;
+    let instruction_measurement = instructions.elapsed(instructions_start);
+    let measurement = counter.elapsed(start);
+    let elapsed = measurement.ticks / 1000;
     let stack = stack_probe.measure();
 
     let mut w = UartWriter;
-    TextReporter::new(UartWriter)
+    let mut reporter = TextReporter::new(UartWriter);
+    reporter
         .stack_measurement(&StackRecord {
             benchmark: "krabiecdsa-footprint",
             measurement: stack,
             fields: &[
                 Field::token("target", "riscv32"),
                 Field::token("backend", backend),
+            ],
+        })
+        .unwrap();
+    reporter
+        .measurement(&MeasurementRecord {
+            benchmark: "krabiecdsa-footprint",
+            measurement: instruction_measurement,
+            fields: &[
+                Field::token("target", "riscv32"),
+                Field::token("backend", backend),
+                Field::token("counter", "minstret"),
+            ],
+        })
+        .unwrap();
+    reporter
+        .measurement(&MeasurementRecord {
+            benchmark: "krabiecdsa-footprint",
+            measurement,
+            fields: &[
+                Field::token("target", "riscv32"),
+                Field::token("backend", backend),
+                Field::token("counter", "mcycle"),
             ],
         })
         .unwrap();
