@@ -9,14 +9,14 @@
 use core::fmt::Write;
 use core::hint::black_box;
 use embedded_measure::Counter;
-use embedded_measure::report::{Field, MeasurementRecord, Reporter, StackRecord, TextReporter};
+use embedded_measure::report::{Field, MeasurementRecord, OutcomeRecord, Reporter, StackRecord};
 use embedded_measure::risc_v::{McycleCounter, MinstretCounter};
 
 pub mod stack;
 pub mod uart;
 
 use stack::paint_stack;
-use uart::{UartWriter, uart_init};
+use uart::{uart_init, uart_reporter};
 
 pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backend: &str) -> ! {
     uart_init();
@@ -32,8 +32,7 @@ pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backen
     let elapsed = measurement.ticks / 1000;
     let stack = stack_probe.measure();
 
-    let mut w = UartWriter;
-    let mut reporter = TextReporter::new(UartWriter);
+    let mut reporter = uart_reporter();
     reporter
         .stack_measurement(&StackRecord {
             benchmark: "krabiecdsa-footprint",
@@ -67,17 +66,27 @@ pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backen
         })
         .unwrap();
     if result {
-        let _ = writeln!(w, "ecdsa ACCEPT");
+        let _ = writeln!(reporter, "ecdsa ACCEPT");
     } else {
-        let _ = writeln!(w, "ecdsa REJECT");
+        let _ = writeln!(reporter, "ecdsa REJECT");
     }
     let _ = write!(
-        w,
+        reporter,
         "METRIC stack:{} cycles:{} target:riscv32 backend:",
         stack.high_water_bytes, elapsed
     );
-    let _ = w.write_str(backend);
-    let _ = w.write_str("\n");
+    let _ = reporter.write_str(backend);
+    let _ = reporter.write_str("\n");
+    reporter
+        .outcome(&OutcomeRecord {
+            benchmark: "krabiecdsa-footprint",
+            passed: result,
+            fields: &[
+                Field::token("target", "riscv32"),
+                Field::token("backend", backend),
+            ],
+        })
+        .unwrap();
 
     loop {
         unsafe { core::arch::asm!("wfi") }
@@ -96,8 +105,8 @@ pub fn fake_verify(pubkey: &[u8], digest: &[u8], r: &[u8], s: &[u8]) -> bool {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     uart_init();
-    let mut w = UartWriter;
-    let _ = writeln!(w, "PANIC: {}", info);
+    let mut reporter = uart_reporter();
+    let _ = writeln!(reporter, "PANIC: {}", info);
     loop {
         unsafe { core::arch::asm!("wfi") }
     }
