@@ -1,6 +1,5 @@
 use super::*;
 use fixed_bigint::FixedUInt;
-use modmath::FieldNct;
 
 type U256 = FixedUInt<u32, 8>;
 type U384 = FixedUInt<u32, 12>;
@@ -25,7 +24,7 @@ struct Vector {
 /// The standard accept/reject battery, generic over curve and
 /// backend: every verify-path rejection case that can be exercised
 /// without curve-specific data lives here.
-fn suite<C: Curve, T: VerifyBackend>(v: &Vector) {
+fn suite<C: Curve, T: FieldFor + ScalarBytes>(v: &Vector) {
     let ok = verify_for_curve::<C, T>(v.pubkey, v.digest, v.r, v.s);
     assert!(ok, "known-good vector must verify");
 
@@ -96,11 +95,11 @@ fn suite<C: Curve, T: VerifyBackend>(v: &Vector) {
 /// Point-arithmetic sanity: G is on the curve, 2G matches an independently
 /// computed reference, and the exceptional cases (P+P dispatch,
 /// P+(−P) = O) behave.
-fn point_arithmetic_suite<C: Curve, T: UnsignedModularInt + core::fmt::Debug>(
+fn point_arithmetic_suite<C: Curve, T: UnsignedModularInt + FieldFor + core::fmt::Debug>(
     g2x: &[u8],
     g2y: &[u8],
 ) {
-    let fp = FieldNct::new(from_be::<T>(C::P)).unwrap();
+    let fp = T::field(from_be::<T>(C::P)).unwrap();
     let a = fp.reduce(&from_be::<T>(C::A));
     let b = fp.reduce(&from_be::<T>(C::B));
     let g = Point {
