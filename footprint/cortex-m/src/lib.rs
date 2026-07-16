@@ -12,7 +12,7 @@ pub mod cyclecount;
 pub mod stack;
 
 use cyclecount::CycleCounter;
-use stack::{check_stack_high_water_mark_inner, paint_stack_inner};
+use stack::paint_stack;
 
 pub fn target_arch_name() -> &'static str {
     #[cfg(thumbv6m)]
@@ -32,12 +32,12 @@ pub fn target_arch_name() -> &'static str {
 pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backend: &str) {
     #[cfg(feature = "jtrace-f407")]
     rtt_init_print!();
-    paint_stack_inner::<SAFE_ZONE_BYTES>();
+    let stack_probe = paint_stack::<SAFE_ZONE_BYTES>();
     let counter = CycleCounter::new();
     let result = testable();
     let measurement = counter.elapsed();
     let elapsed = measurement.systick / 1000;
-    let stack = check_stack_high_water_mark_inner::<SAFE_ZONE_BYTES>();
+    let stack = stack_probe.measure().high_water_bytes;
 
     #[cfg(not(feature = "jtrace-f407"))]
     {

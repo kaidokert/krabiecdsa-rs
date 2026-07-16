@@ -30,10 +30,10 @@ mod fixture {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/p384.rs"));
 }
 
-#[cfg(feature = "curve_p256")]
-use krabiecdsa::p256::P256 as Curve;
 #[cfg(feature = "curve_k256")]
 use krabiecdsa::k256::K256 as Curve;
+#[cfg(feature = "curve_p256")]
+use krabiecdsa::p256::P256 as Curve;
 #[cfg(feature = "curve_p384")]
 use krabiecdsa::p384::P384 as Curve;
 
@@ -48,7 +48,7 @@ fn main() -> ! {
     let pins = arduino_hal::pins!(dp);
     let mut serial = arduino_hal::default_serial!(dp, pins, 57600);
 
-    unsafe { fill_stack_with_watermark() };
+    let stack_probe = fill_stack_with_watermark();
     let counter = krabiecdsa_footprint_avr::cyclecount::CycleCounter::start(&dp.TC1);
     let result = verify_for_curve::<Curve, Backend>(
         &fixture::PUBKEY,
@@ -58,7 +58,7 @@ fn main() -> ! {
     );
     let ticks = counter.elapsed_ticks(&dp.TC1);
     let ms = counter.elapsed_ms(&dp.TC1);
-    let stack_used = unsafe { measure_stack_usage() };
+    let stack_used = measure_stack_usage(&stack_probe);
 
     if result {
         ufmt::uwriteln!(&mut serial, "ecdsa ACCEPT").ok();

@@ -8,6 +8,7 @@ use embedded_measure::cortex_m::DwtCycleCounter;
 use embedded_measure::paired::MaxSpread;
 use embedded_measure::report::Field;
 use embedded_measure::rtt::print;
+use embedded_measure::stack::{CortexM, LinkerStack, StackConfig, StackProbe};
 use embedded_measure::suite::{FixtureSpec, PairedSuite, PairedSuiteConfig, PairedSuiteFields};
 use fixed_bigint::FixedUInt;
 use hmac::Hmac;
@@ -19,7 +20,6 @@ use sha2::Sha256;
 const TRIALS: usize = 4;
 const MAX_POSITIVE_SPREAD: u64 = 32;
 const SUITE: &str = "krabiecdsa-p256-sign";
-const STACK_PAINT: u8 = 0xaa;
 const STACK_SAFE_ZONE: usize = 512;
 
 type Nct = FixedUInt<u32, 8>;
@@ -49,8 +49,8 @@ const FIXED_K: [u8; 32] = [
 ];
 
 unsafe extern "C" {
-    static _stack_start: u32;
-    static _stack_end: u32;
+    static _stack_start: u8;
+    static _stack_end: u8;
 }
 
 #[cfg(feature = "clock-168mhz")]
@@ -80,27 +80,15 @@ fn configure_clock() -> u32 {
     16_000_000
 }
 
-fn paint_stack() {
-    unsafe {
-        let stack_end = &_stack_end as *const u32 as usize;
-        let sp: usize;
-        core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack));
-        let paint_end = sp.saturating_sub(STACK_SAFE_ZONE).max(stack_end);
-        core::ptr::write_bytes(stack_end as *mut u8, STACK_PAINT, paint_end - stack_end);
-    }
-}
-
-fn stack_high_water_mark() -> usize {
-    unsafe {
-        let stack_start = &_stack_start as *const u32 as usize;
-        let stack_end = &_stack_end as *const u32 as usize;
-        let mut current = stack_end;
-        while current < stack_start && core::ptr::read_volatile(current as *const u8) == STACK_PAINT
-        {
-            current += 1;
-        }
-        stack_start - current
-    }
+fn paint_stack() -> StackProbe {
+    let stack = unsafe {
+        LinkerStack::new(
+            core::ptr::addr_of!(_stack_end).cast_mut(),
+            core::ptr::addr_of!(_stack_start).cast_mut(),
+            CortexM,
+        )
+    };
+    StackProbe::paint(&stack, StackConfig::new(STACK_SAFE_ZONE)).unwrap()
 }
 
 fn nonce_once(key: &[u8; 32]) -> bool {
@@ -190,7 +178,7 @@ fn main() -> ! {
         Some(hclk_hz as u64),
     )
     .unwrap();
-    paint_stack();
+    let stack_probe = paint_stack();
 
     let Some(key_a) = preflight(&KEY_A) else {
         print(format_args!("SETUP_FAIL key:A\n"));
@@ -278,11 +266,17 @@ fn main() -> ! {
     suite
         .negative("negative_early_exit", &ZERO, &KEY_A, negative_early_exit)
         .unwrap();
-    let stack = stack_high_water_mark();
+    let stack = stack_probe.measure();
     print(format_args!(
-        "CT_STACK suite:{} carrier:u32x8 bytes:{}\n",
-        SUITE, stack
+        "CT_STACK suite:{} carrier:u32x8 bytes:{} available:{} painted:{} safe_zone:{} overflowed:{}\n",
+        SUITE,
+        stack.high_water_bytes,
+        stack.available_bytes,
+        stack.painted_bytes,
+        stack.safe_zone_bytes,
+        stack.overflowed as u8,
     ));
+    assert!(!stack.overflowed);
     suite.finish().unwrap();
     stop();
 }

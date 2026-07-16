@@ -16,12 +16,12 @@ fn main() -> ! {
     let pins = arduino_hal::pins!(dp);
     let mut serial = arduino_hal::default_serial!(dp, pins, 57600);
 
-    unsafe { fill_stack_with_watermark() };
+    let stack_probe = fill_stack_with_watermark();
     let counter = krabiecdsa_footprint_avr::cyclecount::CycleCounter::start(&dp.TC1);
     let result = fake_verify(&fixture::PUBKEY, &fixture::DIGEST, &fixture::R, &fixture::S);
     let ticks = counter.elapsed_ticks(&dp.TC1);
     let ms = counter.elapsed_ms(&dp.TC1);
-    let stack_used = unsafe { measure_stack_usage() };
+    let stack_used = measure_stack_usage(&stack_probe);
 
     if result {
         ufmt::uwriteln!(&mut serial, "ecdsa ACCEPT").ok();

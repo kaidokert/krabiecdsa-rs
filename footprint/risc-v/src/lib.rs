@@ -14,17 +14,17 @@ pub mod stack;
 pub mod uart;
 
 use cyclecount::CycleCounter;
-use stack::{check_stack_high_water_mark_inner, paint_stack_inner};
+use stack::paint_stack;
 use uart::{UartWriter, uart_init};
 
 pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backend: &str) -> ! {
     uart_init();
 
-    paint_stack_inner::<SAFE_ZONE_BYTES>();
+    let stack_probe = paint_stack::<SAFE_ZONE_BYTES>();
     let counter = CycleCounter::new();
     let result = testable();
     let elapsed = counter.elapsed() / 1000;
-    let stack = check_stack_high_water_mark_inner::<SAFE_ZONE_BYTES>();
+    let stack = stack_probe.measure().high_water_bytes;
 
     let mut w = UartWriter;
     if result {

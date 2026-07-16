@@ -51,7 +51,8 @@ The final same-address campaign produced:
   123,848,366–123,848,370 cycles; 4,926-cycle combined spread with a stable
   key-dependent separation.
 - `negative_early_exit`: **PASS**, 253-cycle combined separation.
-- Stack high-water mark: 6,652 bytes.
+- Stack high-water mark: 6,660 bytes after adopting the shared stack probe;
+  the 126,908-byte region reported `overflowed:0`.
 - Summary: `passed:2 failed:2`.
 
 Whole signing averages about 123.851 million cycles: approximately 0.7372
