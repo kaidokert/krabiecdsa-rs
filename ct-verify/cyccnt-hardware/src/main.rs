@@ -197,7 +197,6 @@ fn main() -> ! {
         Field::u64("trials", TRIALS as u64),
         Field::u64("max_positive_spread", MAX_POSITIVE_SPREAD),
     ];
-    let summary_fields = [Field::token("suite", SUITE)];
     let mut suite = PairedSuite::<_, _, TRIALS>::start(
         &mut counter,
         &mut reporter,
@@ -214,7 +213,7 @@ fn main() -> ! {
             fields: PairedSuiteFields {
                 run: &run_fields,
                 fixture: &[],
-                summary: &summary_fields,
+                summary: &[],
             },
         },
     )

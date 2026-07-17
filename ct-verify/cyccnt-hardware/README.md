@@ -26,11 +26,17 @@ setup remains outside the declared timing boundary without reintroducing
 address bias. Output includes both the versioned `EM_*` records and the legacy
 `CT_*` compatibility records.
 
-Run at the default 168 MHz HSI/PLL profile:
+Run the declarative 168 MHz HSI/PLL hardware gate:
 
 ```sh
-cargo run --release
+cargo embedded-measure run krabiecdsa-signing-ct-jtrace-f407
 ```
+
+The runner owns the exact build, J-Trace selector, RTT completion marker,
+strict protocol validation, and retained artifacts under
+`target/embedded-measure/krabiecdsa-signing-ct-jtrace-f407/`. Its nonzero exit
+is the expected representation of the two findings below, not an orchestration
+failure.
 
 Build or run at the 16 MHz reset clock with:
 
