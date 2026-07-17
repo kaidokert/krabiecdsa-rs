@@ -5,8 +5,15 @@ ELF accounting, deadlines, baseline deltas, and reports. Run
 `cargo embedded-measure run ecdsa-cortex-m0` (or the `m3`/`m4` campaign) in
 this directory; configuration lives in `embedded-measure.toml`.
 
-The measured ECDSA examples also run on the J-Trace reference board's
-STM32F407VG using RTT. For example:
+The same case set runs on the J-Trace reference board through the declarative
+`probe-rs` profile. For a focused P-256 run:
+
+```sh
+cargo embedded-measure run ecdsa-jtrace-f407 \
+  --case baseline --case p256-u32
+```
+
+The equivalent direct command remains useful when diagnosing probe failures:
 
 ```sh
 cargo build --release --target thumbv7em-none-eabihf \
