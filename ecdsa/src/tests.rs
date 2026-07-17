@@ -110,7 +110,7 @@ fn point_arithmetic_suite<C: Curve, T: UnsignedModularInt + FieldFor + core::fmt
     assert!(is_on_curve(&fp, &g, &a, &b));
 
     let g2 = double(&fp, &a, &g);
-    let zinv = fp.inv_fermat(&g2.z).unwrap();
+    let zinv = fp.inv(&g2.z).unwrap();
     let zinv2 = fp.mul(&zinv, &zinv);
     let zinv3 = fp.mul(&zinv2, &zinv);
     let x_aff = fp.into_raw(&fp.mul(&g2.x, &zinv2));

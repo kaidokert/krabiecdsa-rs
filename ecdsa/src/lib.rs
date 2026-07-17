@@ -616,7 +616,7 @@ where
 
 /// Affine x-coordinate `X/Z²`, or `None` for the identity.
 fn to_affine_x<'f, F: FieldOps>(f: &'f F, pt: &Point<'f, F>) -> Option<F::Backend> {
-    let zinv = f.inv_fermat(&pt.z)?;
+    let zinv = f.inv(&pt.z)?;
     let zinv2 = f.mul(&zinv, &zinv);
     Some(f.into_raw(&f.mul(&pt.x, &zinv2)))
 }
@@ -747,7 +747,7 @@ pub fn verify_for_curve<C: Curve, T: FieldFor + ScalarBytes>(
 
     let e = fn_.reduce(&hash_to_scalar(digest, bitlen_be(C::N)));
     let s_res = fn_.reduce(&s_int);
-    let Some(s_inv) = fn_.inv_fermat(&s_res) else {
+    let Some(s_inv) = fn_.inv(&s_res) else {
         return false;
     };
     let r_res = fn_.reduce(&r_int);
@@ -909,7 +909,7 @@ pub mod dangerous {
 
         // s = k⁻¹ · (e + r·d) mod n.
         let e = fn_.reduce(&hash_to_scalar(digest, bitlen_be(C::N)));
-        let Some(k_inv) = fn_.inv_fermat(&fn_.reduce(&k_int)) else {
+        let Some(k_inv) = fn_.inv(&fn_.reduce(&k_int)) else {
             return false;
         };
         let rd = fn_.mul(&fn_.reduce(&r), &fn_.reduce(&d));
