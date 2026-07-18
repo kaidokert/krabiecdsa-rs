@@ -48,11 +48,6 @@ const FIXED_K: [u8; 32] = [
     0x3b, 0x17, 0xaa, 0x87, 0x33, 0x82, 0xb0, 0xf2, 0x4d, 0x61, 0x29, 0x49, 0x3d, 0x8a, 0xad, 0x60,
 ];
 
-unsafe extern "C" {
-    static _stack_start: u8;
-    static _stack_end: u8;
-}
-
 #[cfg(feature = "clock-168mhz")]
 const CLOCK_PROFILE: &str = "hsi-pll-168mhz";
 #[cfg(not(feature = "clock-168mhz"))]
@@ -81,13 +76,8 @@ fn configure_clock() -> u32 {
 }
 
 fn paint_stack() -> StackProbe {
-    let stack = unsafe {
-        LinkerStack::new(
-            core::ptr::addr_of!(_stack_end).cast_mut(),
-            core::ptr::addr_of!(_stack_start).cast_mut(),
-            CortexM,
-        )
-    };
+    // SAFETY: cortex-m-rt defines the writable descending-stack allocation.
+    let stack = unsafe { LinkerStack::<CortexM>::cortex_m_runtime() };
     StackProbe::paint(&stack, StackConfig::new(STACK_SAFE_ZONE)).unwrap()
 }
 
