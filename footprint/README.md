@@ -24,7 +24,8 @@ ed25519_heapless / rsa_heapless harnesses.
   `qemu-system-riscv32` and the `riscv32imac-unknown-none-elf` target.
 - `avr/` — ATmega2560 under `simavr`. Nightly-pinned
   (`rust-toolchain.toml`) with `build-std`; u8 limbs only — there is
-  no wider word on AVR. Run `python3 run_suite.py` (add `--fast` for
-  the baseline + P-256 subset); requires `simavr`.
+  no wider word on AVR. Run `cargo krabi-caliper run ecdsa-avr` or
+  `cargo krabi-caliper run ecdsa-avr-fast`; requires `simavr` and the
+  `krabi-caliper` CLI.
 - `fixtures/` — one verify fixture per curve, taken from the crate's
   openssl cross-check test vectors, shared by all three harnesses.
