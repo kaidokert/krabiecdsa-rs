@@ -32,3 +32,4 @@ expected-suite = "krabiecdsa-p256-sign"
 [campaigns.krabiecdsa-signing-ct-jtrace-f407]
 profile = "jtrace-f407-168mhz"
 case-set = "krabiecdsa-signing-cyccnt"
+constant-time = { welch-threshold = 4.5, minimum-samples-per-class = 4, protected-classes = ["positive", "positive-residual-gap", "positive-whole-operation"], control-classes = ["negative"], gate = false }
