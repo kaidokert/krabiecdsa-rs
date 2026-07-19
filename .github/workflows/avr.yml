@@ -14,10 +14,14 @@ env:
 jobs:
   avr:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
-    - uses: dtolnay/rust-toolchain@master
+    - uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: nightly-2025-11-01
         components: rust-src
