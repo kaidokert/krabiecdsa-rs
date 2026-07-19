@@ -251,6 +251,29 @@ mod p256_tests {
         let mut bad = DIGEST;
         bad[0] ^= 1;
         assert!(key.verify_prehash(&bad, &sig).is_err());
+
+        // Reject paths through the same typed Ct surface: a malformed
+        // key or signature must return `Err`, matching the Nct backend.
+        let mut offcurve = PUB;
+        offcurve[64] ^= 1; // tweak Y → off-curve point
+        assert!(
+            VerifyingKey::<U256Ct>::from_sec1_bytes(offcurve)
+                .verify_prehash(&DIGEST, &sig)
+                .is_err()
+        );
+        let mut bad_prefix = PUB;
+        bad_prefix[0] = 0x02; // not SEC1-uncompressed
+        assert!(
+            VerifyingKey::<U256Ct>::from_sec1_bytes(bad_prefix)
+                .verify_prehash(&DIGEST, &sig)
+                .is_err()
+        );
+        // wrong-length signature (not 2·ELEM_BYTES)
+        assert!(key.verify_prehash(&DIGEST, &vec![0u8; 63]).is_err());
+        // out-of-range r (zero)
+        let mut zero_r = sig;
+        zero_r[..32].fill(0);
+        assert!(key.verify_prehash(&DIGEST, &zero_r).is_err());
     }
 
     #[test]
