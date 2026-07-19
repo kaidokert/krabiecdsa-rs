@@ -16,8 +16,8 @@ const _: () = {
     assert!(N == 1, "exactly one `curve_*` feature must be enabled");
 };
 
-use embedded_measure::avr::timer_measurement;
-use embedded_measure::report::{
+use krabi_caliper::avr::timer_measurement;
+use krabi_caliper::report::{
     Field, MeasurementRecord, StackRecord, write_measurement_ufmt, write_stack_ufmt,
 };
 use fixed_bigint::FixedUInt;

@@ -19,7 +19,7 @@ DWT barriers, observable outputs, and a 32-cycle positive-spread gate. An
 obvious early-exit loop is the required timing-negative control. RTT reports
 the configured HCLK and stack high-water mark.
 
-The carrier uses the shared `embedded-measure` paired-suite, DWT, policy, and
+The carrier uses the shared `krabi-caliper` paired-suite, DWT, policy, and
 reporting primitives. Its prepared-input path copies raw scalars or constructs
 `SigningKey` values in one local slot before entering the measured region, so
 setup remains outside the declared timing boundary without reintroducing
@@ -29,12 +29,12 @@ address bias. Output includes both the versioned `EM_*` records and the legacy
 Run the declarative 168 MHz HSI/PLL hardware gate:
 
 ```sh
-cargo embedded-measure run krabiecdsa-signing-ct-jtrace-f407
+cargo krabi-caliper run krabiecdsa-signing-ct-jtrace-f407
 ```
 
 The runner owns the exact build, J-Trace selector, RTT completion marker,
 strict protocol validation, and retained artifacts under
-`target/embedded-measure/krabiecdsa-signing-ct-jtrace-f407/`. Its nonzero exit
+`target/krabi-caliper/krabiecdsa-signing-ct-jtrace-f407/`. Its nonzero exit
 is the expected representation of the two findings below, not an orchestration
 failure.
 

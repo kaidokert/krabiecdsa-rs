@@ -3,7 +3,7 @@ resolver = "2"
 members = ["cyccnt-hardware"]
 
 [patch.crates-io]
-embedded-measure = { path = "../../embedded-measure" }
+krabi-caliper = { path = "../../krabi-caliper" }
 
 [profile.release]
 codegen-units = 1

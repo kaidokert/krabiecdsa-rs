@@ -31,7 +31,7 @@ fn read_total(tc1: &TC1) -> u64 {
         // A wrap whose ISR hasn't been serviced yet (pending TOV1 with
         // a freshly wrapped counter) would undercount by 65536 ticks;
         // fold it in manually.
-        embedded_measure::avr::extend_timer16(
+        krabi_caliper::avr::extend_timer16(
             wraps,
             tcnt as u16,
             tc1.tifr1.read().tov1().bit_is_set(),

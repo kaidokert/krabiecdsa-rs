@@ -6,7 +6,7 @@ deltas on emulated embedded targets — same methodology as the
 ed25519_heapless / rsa_heapless harnesses.
 
 - `cortex-m/` — Cortex-M0/M3/M4 under `qemu-system-arm`
-  (semihosting). The `cargo embedded-measure` campaigns build every
+  (semihosting). The `cargo krabi-caliper` campaigns build every
   (curve × limb width) combination of the `ecdsa_verify` example plus
   a `baseline` binary, runs them under QEMU, and prints a markdown
   metrics table with ELF, stack, and cycle deltas. The `ecdsa_sign` example (P-256, constant-time
@@ -20,7 +20,7 @@ ed25519_heapless / rsa_heapless harnesses.
   preserving the legacy QEMU metric fields.
 - `risc-v/` — RV32IMAC under `qemu-system-riscv32` (sifive_e). The Rust
   runner stops QEMU after its final `EM_OUTCOME` record, so no wrapper process
-  is required. Run `cargo embedded-measure run ecdsa-riscv32`; requires
+  is required. Run `cargo krabi-caliper run ecdsa-riscv32`; requires
   `qemu-system-riscv32` and the `riscv32imac-unknown-none-elf` target.
 - `avr/` — ATmega2560 under `simavr`. Nightly-pinned
   (`rust-toolchain.toml`) with `build-std`; u8 limbs only — there is

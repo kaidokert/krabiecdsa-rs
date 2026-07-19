@@ -3,13 +3,13 @@
 
 use core::hint::black_box;
 use cortex_m_rt::entry;
-use embedded_measure::Unit;
-use embedded_measure::cortex_m::DwtCycleCounter;
-use embedded_measure::paired::MaxSpread;
-use embedded_measure::report::Field;
-use embedded_measure::rtt::print;
-use embedded_measure::stack::{CortexM, LinkerStack, StackConfig, StackProbe};
-use embedded_measure::suite::{FixtureSpec, PairedSuite, PairedSuiteConfig, PairedSuiteFields};
+use krabi_caliper::Unit;
+use krabi_caliper::cortex_m::DwtCycleCounter;
+use krabi_caliper::paired::MaxSpread;
+use krabi_caliper::report::Field;
+use krabi_caliper::rtt::print;
+use krabi_caliper::stack::{CortexM, LinkerStack, StackConfig, StackProbe};
+use krabi_caliper::suite::{FixtureSpec, PairedSuite, PairedSuiteConfig, PairedSuiteFields};
 use fixed_bigint::FixedUInt;
 use hmac::Hmac;
 use krabiecdsa::const_num_traits::Ct;
@@ -159,7 +159,7 @@ fn stop() -> ! {
 
 #[entry]
 fn main() -> ! {
-    let mut reporter = embedded_measure::rtt::init_ct_compatible();
+    let mut reporter = krabi_caliper::rtt::init_ct_compatible();
     let hclk_hz = configure_clock();
     let mut peripherals = cortex_m::Peripherals::take().unwrap();
     let mut counter = DwtCycleCounter::enable(
