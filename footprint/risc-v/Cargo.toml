@@ -20,7 +20,7 @@ limb_u32 = []
 [dependencies]
 riscv-rt = "0.13"
 
-fixed-bigint = { version = "0.5.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
+fixed-bigint = { version = "0.6.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
 krabiecdsa = { path = "../../ecdsa" }
 
 [profile.release]
