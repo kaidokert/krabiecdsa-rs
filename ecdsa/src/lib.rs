@@ -23,10 +23,11 @@
 //!
 //! The verifiers take an unpacked `(r, s)` pair — DER decoding
 //! belongs to the certificate layer. Verify operates on public data,
-//! so the arithmetic uses the variable-time (`Nct`) modmath surface
-//! throughout.
+//! so it needs no constant-time arithmetic and is generic over the
+//! modmath field backend — the `Nct` surface by default, or `Ct` to
+//! share one carrier with a signer.
 
-use modmath::{FieldNct, ResidueNct};
+pub use modmath::{FieldFor, FieldOps};
 
 // [`UnsignedModularInt`]'s supertraits are spelled in these crates'
 // vocabularies, which makes their versions part of this crate's public
@@ -35,7 +36,6 @@ use modmath::{FieldNct, ResidueNct};
 // separately-versioned dependencies that may fail to unify.
 pub use const_num_traits;
 pub use modmath;
-#[cfg(feature = "experimental-signing")]
 pub use subtle;
 pub use zeroize;
 
@@ -65,6 +65,8 @@ pub trait UnsignedModularInt:
     + const_num_traits::WrappingSub<Output = Self>
     + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
     + const_num_traits::FromByteSlice
+    + const_num_traits::BitsPrecision
+    + const_num_traits::WithPrecision
     + core::ops::Shr<usize, Output = Self>
     + core::ops::ShrAssign<usize>
     + core::ops::BitAnd<Output = Self>
@@ -92,6 +94,8 @@ impl<T> UnsignedModularInt for T where
         + const_num_traits::WrappingSub<Output = Self>
         + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
         + const_num_traits::FromByteSlice
+        + const_num_traits::BitsPrecision
+        + const_num_traits::WithPrecision
         + core::ops::Shr<usize, Output = Self>
         + core::ops::ShrAssign<usize>
         + core::ops::BitAnd<Output = Self>
@@ -254,7 +258,7 @@ macro_rules! define_curve {
 
             $(#[$fn_doc])*
             #[must_use]
-            pub fn verify_prehashed<T: UnsignedModularInt>(
+            pub fn verify_prehashed<T: FieldFor + ScalarBytes>(
                 pubkey: &[u8; PUBKEY_BYTES],
                 digest: &[u8; $db],
                 r: &[u8; $eb],
@@ -269,7 +273,7 @@ macro_rules! define_curve {
             /// the plain [`verify_prehashed`] function is the native
             /// API.
             #[derive(Copy, Clone, PartialEq, Eq)]
-            pub struct VerifyingKey<T: UnsignedModularInt> {
+            pub struct VerifyingKey<T: FieldFor + ScalarBytes> {
                 sec1: [u8; PUBKEY_BYTES],
                 // fn() -> T rather than T: the key names a backend,
                 // it doesn't own one, so auto traits (Send/Sync) hold
@@ -278,7 +282,7 @@ macro_rules! define_curve {
                 _backend: core::marker::PhantomData<fn() -> T>,
             }
 
-            impl<T: UnsignedModularInt> VerifyingKey<T> {
+            impl<T: FieldFor + ScalarBytes> VerifyingKey<T> {
                 /// Wrap SEC1 uncompressed bytes (`0x04 || X || Y`).
                 /// No validation happens here — the point is checked
                 /// on every verify, which returns `Err` for a key
@@ -300,7 +304,7 @@ macro_rules! define_curve {
             /// [`verify_for_curve`] for the truncation rule);
             /// `signature` is IEEE P1363 `r || s`, fixed-width. Any
             /// other signature length is an error.
-            impl<T: UnsignedModularInt, S: AsRef<[u8]>>
+            impl<T: FieldFor + ScalarBytes, S: AsRef<[u8]>>
                 signature::hazmat::PrehashVerifier<S> for VerifyingKey<T>
             {
                 fn verify_prehash(
@@ -331,7 +335,7 @@ macro_rules! define_curve {
             impl<T, Tct, M> signature::hazmat::PrehashSigner<[u8; 2 * $eb]>
                 for crate::dangerous::PrehashSigningKey<$marker, T, Tct, M>
             where
-                T: UnsignedModularInt,
+                T: UnsignedModularInt + FieldFor,
                 Tct: crate::dangerous::ConstantTimeInt,
                 M: digest::KeyInit + digest::Mac,
             {
@@ -428,16 +432,28 @@ define_curve! {
     }
 }
 
-/// Jacobian projective point over the field `p`. The identity is
+/// Jacobian projective point over the field `F`. The identity is
 /// encoded as `Z == 0` (X, Y then carry no information).
-#[derive(Clone)]
-struct Point<'f, T: UnsignedModularInt> {
-    x: ResidueNct<'f, T>,
-    y: ResidueNct<'f, T>,
-    z: ResidueNct<'f, T>,
+// Manual `Clone` (not derived): the derive would demand `F: Clone` on
+// the field type, but only the residues are cloned and they carry the
+// `Clone` bound via the `Residue` GAT.
+struct Point<'f, F: FieldOps + 'f> {
+    x: F::Residue<'f>,
+    y: F::Residue<'f>,
+    z: F::Residue<'f>,
 }
 
-fn infinity<T: UnsignedModularInt>(f: &FieldNct<T>) -> Point<'_, T> {
+impl<'f, F: FieldOps + 'f> Clone for Point<'f, F> {
+    fn clone(&self) -> Self {
+        Point {
+            x: self.x.clone(),
+            y: self.y.clone(),
+            z: self.z.clone(),
+        }
+    }
+}
+
+fn infinity<F: FieldOps>(f: &F) -> Point<'_, F> {
     Point {
         x: f.one(),
         y: f.one(),
@@ -445,7 +461,7 @@ fn infinity<T: UnsignedModularInt>(f: &FieldNct<T>) -> Point<'_, T> {
     }
 }
 
-fn is_infinity<T: UnsignedModularInt>(f: &FieldNct<T>, pt: &Point<'_, T>) -> bool {
+fn is_infinity<'f, F: FieldOps>(f: &'f F, pt: &Point<'f, F>) -> bool {
     pt.z == f.zero()
 }
 
@@ -457,11 +473,11 @@ fn lt<T: ScalarBytes>(a: &T, b: &T) -> bool {
 }
 
 /// `y² == x³ + ax + b`, for an affine point (`z` assumed 1).
-fn is_on_curve<T: UnsignedModularInt>(
-    f: &FieldNct<T>,
-    pt: &Point<'_, T>,
-    a: &ResidueNct<'_, T>,
-    b: &ResidueNct<'_, T>,
+fn is_on_curve<'f, F: FieldOps>(
+    f: &'f F,
+    pt: &Point<'f, F>,
+    a: &F::Residue<'f>,
+    b: &F::Residue<'f>,
 ) -> bool {
     let y2 = f.mul(&pt.y, &pt.y);
     let x2 = f.mul(&pt.x, &pt.x);
@@ -476,11 +492,7 @@ fn is_on_curve<T: UnsignedModularInt>(
 /// at the cost of the `a·ZZ²` multiply a specialized version would
 /// fold away. A `y == 0` input (its double is the identity) falls out
 /// as `z3 = 2yz = 0`.
-fn double<'f, T: UnsignedModularInt>(
-    f: &'f FieldNct<T>,
-    a: &ResidueNct<'f, T>,
-    pt: &Point<'f, T>,
-) -> Point<'f, T> {
+fn double<'f, F: FieldOps>(f: &'f F, a: &F::Residue<'f>, pt: &Point<'f, F>) -> Point<'f, F> {
     if is_infinity(f, pt) {
         return infinity(f);
     }
@@ -523,12 +535,12 @@ fn double<'f, T: UnsignedModularInt>(
 /// General Jacobian addition (EFD add-2007-bl), with the short-
 /// Weierstrass exceptional cases handled explicitly: identity
 /// operands, `P + P` (dispatches to [`double`]), and `P + (−P) = O`.
-fn add<'f, T: UnsignedModularInt>(
-    f: &'f FieldNct<T>,
-    curve_a: &ResidueNct<'f, T>,
-    a: &Point<'f, T>,
-    b: &Point<'f, T>,
-) -> Point<'f, T> {
+fn add<'f, F: FieldOps>(
+    f: &'f F,
+    curve_a: &F::Residue<'f>,
+    a: &Point<'f, F>,
+    b: &Point<'f, F>,
+) -> Point<'f, F> {
     if is_infinity(f, a) {
         return b.clone();
     }
@@ -577,15 +589,18 @@ fn bit<T: ScalarBytes>(v: &T, i: usize) -> bool {
 /// with a precomputed `G + Q`. Variable-time — both scalars are
 /// public on the verify path. Both scalars are `< n < 2^bits`, so
 /// `bits` iterations cover them regardless of the backend's width.
-fn double_scalar_mul<'f, T: UnsignedModularInt>(
-    f: &'f FieldNct<T>,
-    curve_a: &ResidueNct<'f, T>,
+fn double_scalar_mul<'f, F: FieldOps>(
+    f: &'f F,
+    curve_a: &F::Residue<'f>,
     bits: usize,
-    u1: &T,
-    g: &Point<'f, T>,
-    u2: &T,
-    q: &Point<'f, T>,
-) -> Point<'f, T> {
+    u1: &F::Backend,
+    g: &Point<'f, F>,
+    u2: &F::Backend,
+    q: &Point<'f, F>,
+) -> Point<'f, F>
+where
+    F::Backend: ScalarBytes,
+{
     let gq = add(f, curve_a, g, q);
     let mut acc = infinity(f);
     for i in (0..bits).rev() {
@@ -601,8 +616,8 @@ fn double_scalar_mul<'f, T: UnsignedModularInt>(
 }
 
 /// Affine x-coordinate `X/Z²`, or `None` for the identity.
-fn to_affine_x<T: UnsignedModularInt>(f: &FieldNct<T>, pt: &Point<'_, T>) -> Option<T> {
-    let zinv = f.inv_fermat(&pt.z)?;
+fn to_affine_x<'f, F: FieldOps>(f: &'f F, pt: &Point<'f, F>) -> Option<F::Backend> {
+    let zinv = f.inv(&pt.z)?;
     let zinv2 = f.mul(&zinv, &zinv);
     Some(f.into_raw(&f.mul(&pt.x, &zinv2)))
 }
@@ -666,7 +681,7 @@ fn hash_to_scalar<T: ScalarBytes>(digest: &[u8], n_bits: usize) -> T {
 /// `(r, s)` is inherent ECDSA malleability and TLS does not require
 /// low-`s`.
 #[must_use]
-pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
+pub fn verify_for_curve<C: Curve, T: FieldFor + ScalarBytes>(
     pubkey: &[u8],
     digest: &[u8],
     r: &[u8],
@@ -714,7 +729,7 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
 
     // Both moduli are odd curve constants; `None` is unreachable but
     // maps to a clean reject rather than a panic path.
-    let (Some(fp), Some(fn_)) = (FieldNct::new(p), FieldNct::new(n)) else {
+    let (Some(fp), Some(fn_)) = (T::field(p), T::field(n)) else {
         return false;
     };
 
@@ -733,7 +748,7 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
 
     let e = fn_.reduce(&hash_to_scalar(digest, bitlen_be(C::N)));
     let s_res = fn_.reduce(&s_int);
-    let Some(s_inv) = fn_.inv_fermat(&s_res) else {
+    let Some(s_inv) = fn_.inv(&s_res) else {
         return false;
     };
     let r_res = fn_.reduce(&r_int);
@@ -766,10 +781,10 @@ pub fn verify_for_curve<C: Curve, T: UnsignedModularInt>(
 ///
 /// What still keeps this out of production:
 ///
-/// - **The arithmetic is variable-time.** It runs on the same
-///   non-constant-time (`Nct`) modmath surface the verify path uses,
-///   so the secret scalar and nonce leak through timing. A shippable
-///   signer runs the secret operations on the `Ct` surface.
+/// - **The arithmetic is variable-time.** It runs on the
+///   non-constant-time (`Nct`) modmath surface, so the secret scalar
+///   and nonce leak through timing. A shippable signer runs the secret
+///   operations on the `Ct` surface.
 /// - **Unaudited.** Correctness is pinned to RFC 6979 fixed vectors;
 ///   that is not a constant-time review.
 ///
@@ -781,13 +796,16 @@ pub mod dangerous {
 
     /// Fixed-iteration double-and-add `scalar · base`. Variable-time
     /// (POC only — see the module warning).
-    fn scalar_mul<'f, T: UnsignedModularInt>(
-        f: &'f FieldNct<T>,
-        curve_a: &ResidueNct<'f, T>,
+    fn scalar_mul<'f, F: FieldOps>(
+        f: &'f F,
+        curve_a: &F::Residue<'f>,
         bits: usize,
-        scalar: &T,
-        base: &Point<'f, T>,
-    ) -> Point<'f, T> {
+        scalar: &F::Backend,
+        base: &Point<'f, F>,
+    ) -> Point<'f, F>
+    where
+        F::Backend: ScalarBytes,
+    {
         let mut acc = infinity(f);
         for i in (0..bits).rev() {
             acc = double(f, curve_a, &acc);
@@ -829,7 +847,7 @@ pub mod dangerous {
     /// **`k` MUST be unique and unpredictable per signature.** See the
     /// [module warning](self); this is not a safe API.
     #[must_use]
-    pub fn sign_prehashed_with_k<C: Curve, T: UnsignedModularInt>(
+    pub fn sign_prehashed_with_k<C: Curve, T: UnsignedModularInt + FieldFor>(
         private_key: &[u8],
         digest: &[u8],
         k: &[u8],
@@ -870,7 +888,7 @@ pub mod dangerous {
             return false;
         }
 
-        let (Some(fp), Some(fn_)) = (FieldNct::new(p), FieldNct::new(n)) else {
+        let (Some(fp), Some(fn_)) = (T::field(p), T::field(n)) else {
             return false;
         };
         let a_res = fp.reduce(&from_be::<T>(C::A));
@@ -892,7 +910,7 @@ pub mod dangerous {
 
         // s = k⁻¹ · (e + r·d) mod n.
         let e = fn_.reduce(&hash_to_scalar(digest, bitlen_be(C::N)));
-        let Some(k_inv) = fn_.inv_fermat(&fn_.reduce(&k_int)) else {
+        let Some(k_inv) = fn_.inv(&fn_.reduce(&k_int)) else {
             return false;
         };
         let rd = fn_.mul(&fn_.reduce(&r), &fn_.reduce(&d));
@@ -1014,7 +1032,7 @@ pub mod dangerous {
     #[must_use]
     pub fn derive_nonce_rfc6979<
         C: Curve,
-        T: UnsignedModularInt,
+        T: UnsignedModularInt + FieldFor,
         M: digest::KeyInit + digest::Mac,
     >(
         private_key: &[u8],
@@ -1036,7 +1054,7 @@ pub mod dangerous {
         if d == T::zero() || !lt(&d, &n) {
             return false;
         }
-        let Some(fn_) = FieldNct::new(n) else {
+        let Some(fn_) = T::field(n) else {
             return false;
         };
         let qlen = bitlen_be(C::N);
@@ -1066,7 +1084,11 @@ pub mod dangerous {
     /// the vanishingly rare `r == 0` / `s == 0` resample is not
     /// implemented (it would thread the DRBG state through signing).
     #[must_use]
-    pub fn sign_prehashed<C: Curve, T: UnsignedModularInt, M: digest::KeyInit + digest::Mac>(
+    pub fn sign_prehashed<
+        C: Curve,
+        T: UnsignedModularInt + FieldFor,
+        M: digest::KeyInit + digest::Mac,
+    >(
         private_key: &[u8],
         digest: &[u8],
         out_r: &mut [u8],
@@ -1099,8 +1121,8 @@ pub mod dangerous {
     /// analog of [`UnsignedModularInt`]. Blanket-implemented for every
     /// conforming type; in practice `fixed_bigint::FixedUInt<_, _, Ct>`.
     /// The Nct verify backend does **not** qualify — the personalities
-    /// are distinct types by design, so secret arithmetic runs on this
-    /// one while public verify runs on the other.
+    /// are distinct types by design, so secret signing arithmetic runs
+    /// on this `Ct` backend, separate from the `Nct` one.
     ///
     /// The bounds are what `modmath::FieldCt` needs for its
     /// constant-time `mul`/`add`/`sub`/`inv_fermat` plus the
@@ -1111,6 +1133,8 @@ pub mod dangerous {
         + const_num_traits::WrappingAdd<Output = Self>
         + const_num_traits::WrappingSub<Output = Self>
         + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
+        + const_num_traits::BitsPrecision
+        + const_num_traits::WithPrecision
         + CtIsZero
         + modmath::Parity
         + modmath::WideMul
@@ -1127,6 +1151,8 @@ pub mod dangerous {
             + const_num_traits::WrappingAdd<Output = Self>
             + const_num_traits::WrappingSub<Output = Self>
             + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
+            + const_num_traits::BitsPrecision
+            + const_num_traits::WithPrecision
             + CtIsZero
             + modmath::Parity
             + modmath::WideMul
@@ -1349,7 +1375,7 @@ pub mod dangerous {
     #[must_use]
     pub fn sign_prehashed_ct<
         C: Curve,
-        T: UnsignedModularInt,
+        T: UnsignedModularInt + FieldFor,
         Tct: ConstantTimeInt,
         M: digest::KeyInit + digest::Mac,
     >(
@@ -1427,7 +1453,7 @@ pub mod dangerous {
         /// the documented residual timing gap.
         #[must_use]
         pub fn sign_prehashed<
-            T: UnsignedModularInt,
+            T: UnsignedModularInt + FieldFor,
             Tct: ConstantTimeInt,
             M: digest::KeyInit + digest::Mac,
         >(
@@ -1503,8 +1529,12 @@ pub mod dangerous {
         _p: BackendMarker<T, Tct, M>,
     }
 
-    impl<C: Curve, T: UnsignedModularInt, Tct: ConstantTimeInt, M: digest::KeyInit + digest::Mac>
-        PrehashSigningKey<C, T, Tct, M>
+    impl<
+        C: Curve,
+        T: UnsignedModularInt + FieldFor,
+        Tct: ConstantTimeInt,
+        M: digest::KeyInit + digest::Mac,
+    > PrehashSigningKey<C, T, Tct, M>
     {
         /// Wrap a private scalar (see [`SigningKey::from_bytes`]).
         ///

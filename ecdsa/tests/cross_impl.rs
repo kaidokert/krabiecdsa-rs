@@ -20,7 +20,7 @@ use krabiecdsa::const_num_traits::Ct;
 use krabiecdsa::dangerous::{sign_prehashed, sign_prehashed_ct};
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
-use krabiecdsa::{Curve, UnsignedModularInt, verify_for_curve};
+use krabiecdsa::{Curve, FieldFor, UnsignedModularInt, verify_for_curve};
 use sha2::{Sha256, Sha384};
 
 type U256 = fixed_bigint::FixedUInt<u32, 8>;
@@ -84,7 +84,7 @@ const P384_VECS: &[XVec] = &[
 fn check<C, T, Tct, M>(vectors: &[XVec])
 where
     C: Curve,
-    T: UnsignedModularInt,
+    T: UnsignedModularInt + FieldFor,
     Tct: krabiecdsa::dangerous::ConstantTimeInt,
     M: digest::KeyInit + digest::Mac,
 {

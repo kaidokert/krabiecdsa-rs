@@ -15,7 +15,7 @@
 
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
-use krabiecdsa::{Curve, UnsignedModularInt, verify_for_curve};
+use krabiecdsa::{Curve, FieldFor, ScalarBytes, verify_for_curve};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 
 type U256 = fixed_bigint::FixedUInt<u32, 8>;
@@ -40,7 +40,7 @@ fn hex_to_bytes(hex: &str) -> Vec<u8> {
         .collect()
 }
 
-fn run<C: Curve, T: UnsignedModularInt>(vectors: &[CavpVector], hash: fn(&[u8]) -> Vec<u8>) {
+fn run<C: Curve, T: FieldFor + ScalarBytes>(vectors: &[CavpVector], hash: fn(&[u8]) -> Vec<u8>) {
     for v in vectors {
         let mut pubkey = Vec::with_capacity(1 + 2 * C::ELEM_BYTES);
         pubkey.push(0x04);

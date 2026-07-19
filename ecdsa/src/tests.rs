@@ -1,11 +1,15 @@
 use super::*;
 use fixed_bigint::FixedUInt;
-use modmath::FieldNct;
 
 type U256 = FixedUInt<u32, 8>;
 type U384 = FixedUInt<u32, 12>;
 // Oversized backend: proves the verifier is width-agnostic.
 type U512 = FixedUInt<u32, 16>;
+// Constant-time carriers: prove verify runs on the `Ct` personality,
+// not just `Nct` — the single-carrier path a downstream Ct-everywhere
+// build needs.
+type U256Ct = FixedUInt<u32, 8, const_num_traits::Ct>;
+type U384Ct = FixedUInt<u32, 12, const_num_traits::Ct>;
 
 /// One openssl-produced known-good signature plus the curve's
 /// precomputed `n − s` (for the malleability-acceptance check).
@@ -20,7 +24,7 @@ struct Vector {
 /// The standard accept/reject battery, generic over curve and
 /// backend: every verify-path rejection case that can be exercised
 /// without curve-specific data lives here.
-fn suite<C: Curve, T: UnsignedModularInt>(v: &Vector) {
+fn suite<C: Curve, T: FieldFor + ScalarBytes>(v: &Vector) {
     let ok = verify_for_curve::<C, T>(v.pubkey, v.digest, v.r, v.s);
     assert!(ok, "known-good vector must verify");
 
@@ -91,11 +95,11 @@ fn suite<C: Curve, T: UnsignedModularInt>(v: &Vector) {
 /// Point-arithmetic sanity: G is on the curve, 2G matches an independently
 /// computed reference, and the exceptional cases (P+P dispatch,
 /// P+(−P) = O) behave.
-fn point_arithmetic_suite<C: Curve, T: UnsignedModularInt + core::fmt::Debug>(
+fn point_arithmetic_suite<C: Curve, T: UnsignedModularInt + FieldFor + core::fmt::Debug>(
     g2x: &[u8],
     g2y: &[u8],
 ) {
-    let fp = FieldNct::new(from_be::<T>(C::P)).unwrap();
+    let fp = T::field(from_be::<T>(C::P)).unwrap();
     let a = fp.reduce(&from_be::<T>(C::A));
     let b = fp.reduce(&from_be::<T>(C::B));
     let g = Point {
@@ -106,7 +110,7 @@ fn point_arithmetic_suite<C: Curve, T: UnsignedModularInt + core::fmt::Debug>(
     assert!(is_on_curve(&fp, &g, &a, &b));
 
     let g2 = double(&fp, &a, &g);
-    let zinv = fp.inv_fermat(&g2.z).unwrap();
+    let zinv = fp.inv(&g2.z).unwrap();
     let zinv2 = fp.mul(&zinv, &zinv);
     let zinv3 = fp.mul(&zinv2, &zinv);
     let x_aff = fp.into_raw(&fp.mul(&g2.x, &zinv2));
@@ -226,6 +230,50 @@ mod p256_tests {
     #[test]
     fn full_suite() {
         suite::<P256, U256>(&VEC);
+    }
+
+    #[test]
+    fn full_suite_ct_backend() {
+        suite::<P256, U256Ct>(&VEC);
+    }
+
+    #[test]
+    fn verifying_key_ct_backend() {
+        // The exact typed surface a Ct-everywhere consumer uses:
+        // VerifyingKey<Ct>::from_sec1_bytes + PrehashVerifier.
+        use crate::p256::VerifyingKey;
+        use signature::hazmat::PrehashVerifier;
+        let key = VerifyingKey::<U256Ct>::from_sec1_bytes(PUB);
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(&R);
+        sig[32..].copy_from_slice(&S);
+        assert!(key.verify_prehash(&DIGEST, &sig).is_ok());
+        let mut bad = DIGEST;
+        bad[0] ^= 1;
+        assert!(key.verify_prehash(&bad, &sig).is_err());
+
+        // Reject paths through the same typed Ct surface: a malformed
+        // key or signature must return `Err`, matching the Nct backend.
+        let mut offcurve = PUB;
+        offcurve[64] ^= 1; // tweak Y → off-curve point
+        assert!(
+            VerifyingKey::<U256Ct>::from_sec1_bytes(offcurve)
+                .verify_prehash(&DIGEST, &sig)
+                .is_err()
+        );
+        let mut bad_prefix = PUB;
+        bad_prefix[0] = 0x02; // not SEC1-uncompressed
+        assert!(
+            VerifyingKey::<U256Ct>::from_sec1_bytes(bad_prefix)
+                .verify_prehash(&DIGEST, &sig)
+                .is_err()
+        );
+        // wrong-length signature (not 2·ELEM_BYTES)
+        assert!(key.verify_prehash(&DIGEST, &vec![0u8; 63]).is_err());
+        // out-of-range r (zero)
+        let mut zero_r = sig;
+        zero_r[..32].fill(0);
+        assert!(key.verify_prehash(&DIGEST, &zero_r).is_err());
     }
 
     #[test]
@@ -415,6 +463,11 @@ mod p384_tests {
     #[test]
     fn full_suite() {
         suite::<P384, U384>(&VEC);
+    }
+
+    #[test]
+    fn full_suite_ct_backend() {
+        suite::<P384, U384Ct>(&VEC);
     }
 
     #[test]
