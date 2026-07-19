@@ -16,9 +16,6 @@ const-num-traits = { version = "0.2.1", default-features = false, features = ["c
 signature = { version = "3.0", default-features = false }
 zeroize = { version = "1", default-features = false }
 digest = { version = "0.10", default-features = false, features = ["mac"], optional = true }
-# Non-optional: the constant-time (`Ct`) verify path (personality-generic
-# VerifyingKey) needs `subtle`'s bounds unconditionally, and modmath's
-# FieldCt already pulls it into the graph, so this adds no new crate.
 subtle = { version = "2.6", default-features = false }
 
 [features]
