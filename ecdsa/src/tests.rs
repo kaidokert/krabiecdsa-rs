@@ -234,7 +234,6 @@ mod p256_tests {
 
     #[test]
     fn full_suite_ct_backend() {
-        // Same accept/reject battery on the constant-time carrier.
         suite::<P256, U256Ct>(&VEC);
     }
 
@@ -249,7 +248,6 @@ mod p256_tests {
         sig[..32].copy_from_slice(&R);
         sig[32..].copy_from_slice(&S);
         assert!(key.verify_prehash(&DIGEST, &sig).is_ok());
-        // Tampered digest still rejects on the Ct path.
         let mut bad = DIGEST;
         bad[0] ^= 1;
         assert!(key.verify_prehash(&bad, &sig).is_err());

@@ -23,8 +23,9 @@
 //!
 //! The verifiers take an unpacked `(r, s)` pair — DER decoding
 //! belongs to the certificate layer. Verify operates on public data,
-//! so the arithmetic uses the variable-time (`Nct`) modmath surface
-//! throughout.
+//! so it needs no constant-time arithmetic and is generic over the
+//! modmath field backend — the `Nct` surface by default, or `Ct` to
+//! share one carrier with a signer.
 
 pub use modmath::{FieldFor, FieldOps};
 
@@ -780,10 +781,10 @@ pub fn verify_for_curve<C: Curve, T: FieldFor + ScalarBytes>(
 ///
 /// What still keeps this out of production:
 ///
-/// - **The arithmetic is variable-time.** It runs on the same
-///   non-constant-time (`Nct`) modmath surface the verify path uses,
-///   so the secret scalar and nonce leak through timing. A shippable
-///   signer runs the secret operations on the `Ct` surface.
+/// - **The arithmetic is variable-time.** It runs on the
+///   non-constant-time (`Nct`) modmath surface, so the secret scalar
+///   and nonce leak through timing. A shippable signer runs the secret
+///   operations on the `Ct` surface.
 /// - **Unaudited.** Correctness is pinned to RFC 6979 fixed vectors;
 ///   that is not a constant-time review.
 ///
@@ -1120,8 +1121,8 @@ pub mod dangerous {
     /// analog of [`UnsignedModularInt`]. Blanket-implemented for every
     /// conforming type; in practice `fixed_bigint::FixedUInt<_, _, Ct>`.
     /// The Nct verify backend does **not** qualify — the personalities
-    /// are distinct types by design, so secret arithmetic runs on this
-    /// one while public verify runs on the other.
+    /// are distinct types by design, so secret signing arithmetic runs
+    /// on this `Ct` backend, separate from the `Nct` one.
     ///
     /// The bounds are what `modmath::FieldCt` needs for its
     /// constant-time `mul`/`add`/`sub`/`inv_fermat` plus the
