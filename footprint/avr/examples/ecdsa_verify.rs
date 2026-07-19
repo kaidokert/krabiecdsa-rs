@@ -16,14 +16,11 @@ const _: () = {
     assert!(N == 1, "exactly one `curve_*` feature must be enabled");
 };
 
-use krabi_caliper::avr::timer_measurement;
-use krabi_caliper::report::{
-    Field, MeasurementRecord, StackRecord, write_measurement_ufmt, write_stack_ufmt,
-};
 use fixed_bigint::FixedUInt;
+use krabi_caliper::avr::timer_measurement;
+use krabi_caliper::report::{Field, UfmtReporter};
 use krabiecdsa::verify_for_curve;
 use krabiecdsa_footprint_avr as _;
-use krabiecdsa_footprint_avr::stack_measurement::*;
 
 mod fixture {
     #[cfg(feature = "curve_p256")]
@@ -50,9 +47,11 @@ type Backend = FixedUInt<u8, 48>;
 fn main() -> ! {
     let dp = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
-    let mut serial = arduino_hal::default_serial!(dp, pins, 57600);
+    let serial = arduino_hal::default_serial!(dp, pins, 57600);
 
-    let stack_probe = fill_stack_with_watermark();
+    // SAFETY: ATmega2560 SRAM above `_end` is reserved for this single stack.
+    let stack_probe =
+        unsafe { krabi_caliper::stack::paint_avr_runtime::<64>(0x2200, 0xce) }.unwrap();
     let counter = krabiecdsa_footprint_avr::cyclecount::CycleCounter::start(&dp.TC1);
     let result = verify_for_curve::<Curve, Backend>(
         &fixture::PUBKEY,
@@ -62,31 +61,22 @@ fn main() -> ! {
     );
     let ticks = counter.elapsed_ticks(&dp.TC1);
     let ms = counter.elapsed_ms(&dp.TC1);
-    let stack = measure_stack(&stack_probe);
-    write_stack_ufmt(
-        &mut serial,
-        &StackRecord {
-            benchmark: "krabiecdsa-footprint",
-            measurement: stack,
-            fields: &[
-                Field::token("target", "atmega2560"),
-                Field::token("operation", "verify"),
-            ],
-        },
+    let stack = stack_probe.measure();
+    let fields = [
+        Field::token("target", "atmega2560"),
+        Field::token("operation", "verify"),
+    ];
+    let mut reporter = UfmtReporter::new(serial);
+    krabi_caliper::report_completed!(
+        &mut reporter,
+        benchmark: "krabiecdsa-footprint",
+        passed: result,
+        fields: &fields,
+        stack: stack,
+        measurements: [("timer1", timer_measurement(ticks as u64, 15_625, false))]
     )
     .unwrap();
-    write_measurement_ufmt(
-        &mut serial,
-        &MeasurementRecord {
-            benchmark: "krabiecdsa-footprint",
-            measurement: timer_measurement(ticks as u64, 15_625, false),
-            fields: &[
-                Field::token("target", "atmega2560"),
-                Field::token("operation", "verify"),
-            ],
-        },
-    )
-    .unwrap();
+    let mut serial = reporter.into_inner();
 
     if result {
         ufmt::uwriteln!(&mut serial, "ecdsa ACCEPT").ok();

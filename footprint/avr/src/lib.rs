@@ -11,7 +11,6 @@
 use core::hint::black_box;
 
 pub mod cyclecount;
-pub mod stack_measurement;
 
 /// Baseline stand-in for a verify: touches the same fixture bytes so
 /// the verify-minus-baseline delta isolates the crypto itself.

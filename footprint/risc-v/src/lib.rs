@@ -9,19 +9,28 @@
 use core::fmt::Write;
 use core::hint::black_box;
 use krabi_caliper::Counter;
-use krabi_caliper::report::{Field, MeasurementRecord, OutcomeRecord, Reporter, StackRecord};
-use krabi_caliper::risc_v::{McycleCounter, MinstretCounter};
+use krabi_caliper::report::Field;
+use krabi_caliper::risc_v::{McycleCounter, MinstretCounter, MmioTxFifo32, write_mmio32};
+use krabi_caliper::uart::{UartReporter, reporter};
 
-pub mod stack;
-pub mod uart;
+type SifiveReporter = UartReporter<MmioTxFifo32<0x1001_3000>>;
 
-use stack::paint_stack;
-use uart::{uart_init, uart_reporter};
+fn uart_init() {
+    // SAFETY: sifive_e UART0 is exclusively owned by this single-core fixture.
+    unsafe { write_mmio32(0x1001_3008, 1) }
+}
+
+fn uart_reporter() -> SifiveReporter {
+    // SAFETY: sifive_e UART0 is exclusively owned by this single-core fixture.
+    reporter(unsafe { MmioTxFifo32::new() })
+}
 
 pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backend: &str) -> ! {
     uart_init();
 
-    let stack_probe = paint_stack::<SAFE_ZONE_BYTES>();
+    // SAFETY: riscv-rt owns the single stack described by its linker symbols.
+    let stack_probe =
+        unsafe { krabi_caliper::stack::paint_riscv_runtime::<SAFE_ZONE_BYTES>() }.unwrap();
     let mut counter = McycleCounter::new(None);
     let mut instructions = MinstretCounter::new(None);
     let start = counter.now();
@@ -33,38 +42,10 @@ pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backen
     let stack = stack_probe.measure();
 
     let mut reporter = uart_reporter();
-    reporter
-        .stack_measurement(&StackRecord {
-            benchmark: "krabiecdsa-footprint",
-            measurement: stack,
-            fields: &[
-                Field::token("target", "riscv32"),
-                Field::token("backend", backend),
-            ],
-        })
-        .unwrap();
-    reporter
-        .measurement(&MeasurementRecord {
-            benchmark: "krabiecdsa-footprint",
-            measurement: instruction_measurement,
-            fields: &[
-                Field::token("target", "riscv32"),
-                Field::token("backend", backend),
-                Field::token("counter", "minstret"),
-            ],
-        })
-        .unwrap();
-    reporter
-        .measurement(&MeasurementRecord {
-            benchmark: "krabiecdsa-footprint",
-            measurement,
-            fields: &[
-                Field::token("target", "riscv32"),
-                Field::token("backend", backend),
-                Field::token("counter", "mcycle"),
-            ],
-        })
-        .unwrap();
+    let fields = [
+        Field::token("target", "riscv32"),
+        Field::token("backend", backend),
+    ];
     if result {
         let _ = writeln!(reporter, "ecdsa ACCEPT");
     } else {
@@ -77,19 +58,21 @@ pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backen
     );
     let _ = reporter.write_str(backend);
     let _ = reporter.write_str("\n");
-    reporter
-        .outcome(&OutcomeRecord {
-            benchmark: "krabiecdsa-footprint",
-            passed: result,
-            fields: &[
-                Field::token("target", "riscv32"),
-                Field::token("backend", backend),
-            ],
-        })
-        .unwrap();
+    krabi_caliper::report_completed!(
+        &mut reporter,
+        benchmark: "krabiecdsa-footprint",
+        passed: result,
+        fields: &fields,
+        stack: stack,
+        measurements: [
+            ("minstret", instruction_measurement),
+            ("mcycle", measurement),
+        ]
+    )
+    .unwrap();
 
     loop {
-        unsafe { core::arch::asm!("wfi") }
+        core::hint::spin_loop()
     }
 }
 
@@ -108,6 +91,6 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     let mut reporter = uart_reporter();
     let _ = writeln!(reporter, "PANIC: {}", info);
     loop {
-        unsafe { core::arch::asm!("wfi") }
+        core::hint::spin_loop()
     }
 }
