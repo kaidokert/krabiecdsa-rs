@@ -21,7 +21,7 @@ limb_u32 = []
 riscv-rt = "0.13"
 krabi-caliper = { version = "0.1.0", features = ["stack", "risc-v"] }
 
-fixed-bigint = { version = "0.5.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
+fixed-bigint = { version = "0.6.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
 krabiecdsa = { path = "../../ecdsa" }
 
 [profile.release]

@@ -22,7 +22,7 @@ use krabiecdsa::dangerous::{
 };
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
-use krabiecdsa::{Curve, UnsignedModularInt, verify_for_curve};
+use krabiecdsa::{Curve, FieldFor, UnsignedModularInt, verify_for_curve};
 use sha2::{Sha256, Sha384, Sha512};
 
 type U256 = fixed_bigint::FixedUInt<u32, 8>;
@@ -108,7 +108,7 @@ const P384_SHA384: &[Vec2] = &[
 fn check_deterministic<C, T, M>(d: &str, pk: &[u8], vectors: &[Vec2], eb: usize)
 where
     C: Curve,
-    T: UnsignedModularInt,
+    T: UnsignedModularInt + FieldFor,
     M: digest::KeyInit + digest::Mac,
 {
     let d = hx(d);
