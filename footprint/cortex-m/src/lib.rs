@@ -2,73 +2,30 @@
 
 #![no_std]
 
-use core::{fmt::Write, hint::black_box};
-use krabi_caliper::cortex_m::CycleCounters as CycleCounter;
+use core::hint::black_box;
+use krabi_caliper::cortex_m::FootprintConfig;
 use krabi_caliper::report::Field;
-use krabi_caliper::{Measurement, Unit};
 
 krabi_caliper::cortex_m_systick_overflow_handler!();
 
 pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backend: &str) {
-    // SAFETY: cortex-m-rt owns the single stack described by its linker symbols.
-    let stack_probe =
-        unsafe { krabi_caliper::stack::paint_cortex_m_runtime::<SAFE_ZONE_BYTES>() }.unwrap();
-    let counter = CycleCounter::start(cfg!(feature = "jtrace-f407"), None).unwrap();
-    let result = testable();
-    let measurement = counter.elapsed_since_start();
-    let elapsed = measurement.systick / 1000;
-    let stack = stack_probe.measure();
     let fields = [
         Field::token("target", krabi_caliper::stack::cortex_m_architecture_name()),
         Field::token("backend", backend),
     ];
-
-    let mut reporter = krabi_caliper::cortex_m_reporter!("jtrace-f407");
-    let cycles = Measurement::new(measurement.systick, Unit::CoreCycles);
+    let config = FootprintConfig::new("krabiecdsa-footprint", &fields)
+        .enable_dwt(cfg!(feature = "jtrace-f407"));
     #[cfg(feature = "jtrace-f407")]
-    let cycles = cycles.with_frequency(16_000_000);
-    writeln!(
-        reporter,
-        "ecdsa {}",
-        if result { "ACCEPT" } else { "REJECT" }
-    )
+    let config = config.frequency_hz(16_000_000);
+    // SAFETY: cortex-m-rt owns the single stack described by its linker symbols.
+    let result = unsafe {
+        krabi_caliper::cortex_m::run_footprint::<SAFE_ZONE_BYTES, _>(
+            || krabi_caliper::cortex_m_reporter!("jtrace-f407"),
+            config,
+            testable,
+        )
+    }
     .unwrap();
-    write!(
-        reporter,
-        "METRIC stack:{} cycles:{} target:{} backend:{}",
-        stack.high_water_bytes,
-        elapsed,
-        krabi_caliper::stack::cortex_m_architecture_name(),
-        backend
-    )
-    .unwrap();
-    #[cfg(feature = "jtrace-f407")]
-    write!(
-        reporter,
-        " dwt_cycles:{} systick_cycles:{}",
-        measurement.dwt.unwrap(),
-        measurement.systick
-    )
-    .unwrap();
-    writeln!(reporter).unwrap();
-    krabi_caliper::report_completed!(
-        &mut reporter,
-        benchmark: "krabiecdsa-footprint",
-        passed: result,
-        fields: &fields,
-        stack: stack,
-        measurements: [
-            ("systick", cycles),
-            #[cfg(feature = "jtrace-f407")]
-            (
-                "dwt",
-                Measurement::new(measurement.dwt.unwrap() as u64, Unit::CoreCycles)
-                    .with_frequency(16_000_000)
-            ),
-        ]
-    )
-    .unwrap();
-
     krabi_caliper::finish_cortex_m_report!(result, "jtrace-f407");
 }
 
