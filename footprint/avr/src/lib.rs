@@ -1,7 +1,7 @@
 //! Footprint-measurement harness for krabiecdsa on AVR ATmega2560
 //! under simavr. Same methodology as the Cortex-M/RISC-V harnesses;
 //! measurement plumbing (watermark painting, Timer1 wrap counting)
-//! lives in the submodules, the examples drive it inline since the
+//! comes from krabi-caliper; the examples drive it inline since the
 //! arduino-hal peripherals can't cross a fn boundary by value.
 
 #![no_std]
@@ -10,7 +10,7 @@
 
 use core::hint::black_box;
 
-pub mod cyclecount;
+krabi_caliper::atmega2560_timer1_overflow_handler!();
 
 /// Baseline stand-in for a verify: touches the same fixture bytes so
 /// the verify-minus-baseline delta isolates the crypto itself.

@@ -3,12 +3,11 @@
 #![no_std]
 
 use core::{fmt::Write, hint::black_box};
+use krabi_caliper::cortex_m::CycleCounters as CycleCounter;
 use krabi_caliper::report::Field;
 use krabi_caliper::{Measurement, Unit};
 
-pub mod cyclecount;
-
-use cyclecount::CycleCounter;
+krabi_caliper::cortex_m_systick_overflow_handler!();
 
 pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backend: &str) {
     // SAFETY: cortex-m-rt owns the single stack described by its linker symbols.
