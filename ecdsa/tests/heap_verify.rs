@@ -9,7 +9,7 @@
 
 use krabiecdsa::p256::P256;
 use krabiecdsa::verify_for_curve_ref;
-use num_bigint_patched::FixedWidthBigUint as Heap;
+use num_bigint::FixedWidthBigUint as Heap;
 
 fn hx(s: &str) -> Vec<u8> {
     (0..s.len() / 2)

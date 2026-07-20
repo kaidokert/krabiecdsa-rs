@@ -28,9 +28,9 @@ experimental-signing = ["dep:digest"]
 
 [dev-dependencies]
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["cios", "zeroize"] }
-# Heap-backed Nct carrier (`FixedWidthBigUint`) for the verify-only
-# non-Copy path test; pinned to modmath's tag so it unifies to one type.
-num-bigint_patched = { package = "num-bigint", git = "https://github.com/kaidokert/num-bigint.git", tag = "v0.4.4-const-12", default-features = false }
+# Heap-backed non-Copy carrier (Nct) for the verify-only non-Copy path
+# test; pinned to modmath's tag so it unifies to one `FixedWidthBigUint`.
+num-bigint = { git = "https://github.com/kaidokert/num-bigint.git", tag = "v0.4.4-const-12" }
 signature = { version = "3.0", default-features = false }
 sha2 = "0.10"
 hmac = "0.12"
