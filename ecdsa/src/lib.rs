@@ -347,7 +347,7 @@ macro_rules! define_curve {
             /// schoolbook field). Same RustCrypto
             /// [`signature::hazmat::PrehashVerifier`] surface, for a
             /// verify-only single-carrier build.
-            #[derive(Clone)]
+            #[derive(Clone, PartialEq, Eq)]
             pub struct RefVerifyingKey<T>
             where
                 T: ScalarBytes,

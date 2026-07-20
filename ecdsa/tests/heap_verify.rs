@@ -58,3 +58,33 @@ fn heap_verifying_key_p256() {
     // wrong-length signature rejects
     assert!(key.verify_prehash(&digest, &[0u8; 63]).is_err());
 }
+
+#[test]
+fn heap_malformed_inputs_reject_no_panic() {
+    // The SEC1 length/tag checks live in the shared verify core, so the
+    // ref path rejects malformed input cleanly rather than panicking on a
+    // slice. (Refutes a review claim that the ref path skips the checks.)
+    let (pk, digest, r, s) = (hx(PUB), hx(DIGEST), hx(R), hx(S));
+    assert!(!verify_for_curve_ref::<P256, Heap>(&[], &digest, &r, &s)); // empty pubkey
+    assert!(!verify_for_curve_ref::<P256, Heap>(
+        &pk[..64],
+        &digest,
+        &r,
+        &s
+    )); // short pubkey
+    let mut wrong_prefix = pk.clone();
+    wrong_prefix[0] = 0x02;
+    assert!(!verify_for_curve_ref::<P256, Heap>(
+        &wrong_prefix,
+        &digest,
+        &r,
+        &s
+    ));
+    assert!(!verify_for_curve_ref::<P256, Heap>(
+        &pk,
+        &digest,
+        &r[..31],
+        &s
+    )); // short r
+    assert!(!verify_for_curve_ref::<P256, Heap>(&pk, &[], &r, &s)); // empty digest
+}
