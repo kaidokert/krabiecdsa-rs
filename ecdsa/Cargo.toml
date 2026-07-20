@@ -11,7 +11,7 @@ keywords = ["ecdsa", "p256", "secp256k1", "no_std", "embedded"]
 categories = ["cryptography", "no-std", "no-std::no-alloc", "embedded"]
 
 [dependencies]
-modmath = "0.6.0"
+modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.6.1-alpha.1" }
 const-num-traits = { version = "0.2.1", default-features = false, features = ["ct"] }
 signature = { version = "3.0", default-features = false }
 zeroize = { version = "1", default-features = false }
@@ -28,6 +28,10 @@ experimental-signing = ["dep:digest"]
 
 [dev-dependencies]
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["cios", "zeroize"] }
+# Heap-backed Nct carrier (`FixedWidthBigUint`) for the verify-only
+# non-Copy path test; pinned to modmath's tag so it unifies to one type.
+num-bigint_patched = { package = "num-bigint", git = "https://github.com/kaidokert/num-bigint.git", tag = "v0.4.4-const-12", default-features = false }
+signature = { version = "3.0", default-features = false }
 sha2 = "0.10"
 hmac = "0.12"
 digest = { version = "0.10", features = ["mac"] }

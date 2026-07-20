@@ -113,7 +113,7 @@ impl<T> UnsignedModularInt for T where
 /// backend ([`dangerous::ConstantTimeInt`]) carry these, so the
 /// helpers are written once against this subset and reused by both.
 pub trait ScalarBytes:
-    Copy
+    Clone
     + PartialEq
     + PartialOrd
     + const_num_traits::Zero
@@ -126,7 +126,7 @@ pub trait ScalarBytes:
 }
 
 impl<T> ScalarBytes for T where
-    T: Copy
+    T: Clone
         + PartialEq
         + PartialOrd
         + const_num_traits::Zero
@@ -318,6 +318,81 @@ macro_rules! define_curve {
                     }
                     let (r, s) = sig.split_at($eb);
                     if verify_for_curve::<$marker, T>(&self.sec1, prehash, r, s) {
+                        Ok(())
+                    } else {
+                        Err(signature::Error::new())
+                    }
+                }
+            }
+
+            /// Heap / non-`Copy` analog of [`verify_prehashed`], verifying
+            /// through the schoolbook field ([`verify_for_curve_ref`]).
+            #[must_use]
+            pub fn verify_prehashed_ref<T>(
+                pubkey: &[u8; PUBKEY_BYTES],
+                digest: &[u8; $db],
+                r: &[u8; $eb],
+                s: &[u8; $eb],
+            ) -> bool
+            where
+                T: ScalarBytes,
+                modmath::SchoolbookFieldRef<T>: FieldOps<Backend = T>,
+            {
+                verify_for_curve_ref::<$marker, T>(pubkey, digest, r, s)
+            }
+
+            /// SEC1-uncompressed verifying key for a **heap / non-`Copy`**
+            /// carrier — the [`RefVerifyingKey`] analog of [`VerifyingKey`],
+            /// verifying through [`verify_for_curve_ref`] (the variable-time
+            /// schoolbook field). Same RustCrypto
+            /// [`signature::hazmat::PrehashVerifier`] surface, for a
+            /// verify-only single-carrier build.
+            #[derive(Clone)]
+            pub struct RefVerifyingKey<T>
+            where
+                T: ScalarBytes,
+                modmath::SchoolbookFieldRef<T>: FieldOps<Backend = T>,
+            {
+                sec1: [u8; PUBKEY_BYTES],
+                _backend: core::marker::PhantomData<fn() -> T>,
+            }
+
+            impl<T> RefVerifyingKey<T>
+            where
+                T: ScalarBytes,
+                modmath::SchoolbookFieldRef<T>: FieldOps<Backend = T>,
+            {
+                /// Wrap SEC1 uncompressed bytes (`0x04 || X || Y`).
+                pub const fn from_sec1_bytes(sec1: [u8; PUBKEY_BYTES]) -> Self {
+                    Self {
+                        sec1,
+                        _backend: core::marker::PhantomData,
+                    }
+                }
+
+                /// The wrapped SEC1 bytes.
+                pub const fn as_sec1_bytes(&self) -> &[u8; PUBKEY_BYTES] {
+                    &self.sec1
+                }
+            }
+
+            impl<T, S: AsRef<[u8]>> signature::hazmat::PrehashVerifier<S>
+                for RefVerifyingKey<T>
+            where
+                T: ScalarBytes,
+                modmath::SchoolbookFieldRef<T>: FieldOps<Backend = T>,
+            {
+                fn verify_prehash(
+                    &self,
+                    prehash: &[u8],
+                    signature: &S,
+                ) -> Result<(), signature::Error> {
+                    let sig = signature.as_ref();
+                    if sig.len() != 2 * $eb {
+                        return Err(signature::Error::new());
+                    }
+                    let (r, s) = sig.split_at($eb);
+                    if verify_for_curve_ref::<$marker, T>(&self.sec1, prehash, r, s) {
                         Ok(())
                     } else {
                         Err(signature::Error::new())
@@ -582,7 +657,9 @@ fn add<'f, F: FieldOps>(
 }
 
 fn bit<T: ScalarBytes>(v: &T, i: usize) -> bool {
-    (*v >> i) & T::one() != T::zero()
+    // `v.clone() >> i` rather than `*v >> i`: the shift is by-value but
+    // must not move out of the `&T` borrow (a heap carrier isn't `Copy`).
+    (v.clone() >> i) & T::one() != T::zero()
 }
 
 /// `u1·G + u2·Q` via Shamir's trick: one shared double-and-add pass
@@ -692,6 +769,54 @@ pub fn verify_for_curve<C: Curve, T: FieldFor + ScalarBytes>(
             core::mem::size_of::<T>() >= C::ELEM_BYTES,
             "backend type narrower than the curve's field element"
         );
+    }
+    // Both moduli are odd curve constants; `None` is unreachable but
+    // maps to a clean reject rather than a panic path.
+    let (Some(fp), Some(fn_)) = (T::field(from_be::<T>(C::P)), T::field(from_be::<T>(C::N))) else {
+        return false;
+    };
+    verify_inner::<C, T::Field>(&fp, &fn_, pubkey, digest, r, s)
+}
+
+/// Like [`verify_for_curve`], for a **heap / `Clone` (non-`Copy`)**
+/// carrier — a verify-only path over modmath's variable-time schoolbook
+/// field ([`modmath::SchoolbookFieldRef`]) instead of the `Copy`-gated
+/// Montgomery field. Verify is public data, so the variable-time field
+/// is a correctness-equivalent footprint/allocation trade. The carrier
+/// physically cannot reach any constant-time (sign) path — it isn't
+/// `Copy`, so it can never be a [`dangerous::ConstantTimeInt`].
+#[must_use]
+pub fn verify_for_curve_ref<C: Curve, T>(pubkey: &[u8], digest: &[u8], r: &[u8], s: &[u8]) -> bool
+where
+    T: ScalarBytes,
+    modmath::SchoolbookFieldRef<T>: FieldOps<Backend = T>,
+{
+    let (Some(fp), Some(fn_)) = (
+        modmath::SchoolbookFieldRef::new(from_be::<T>(C::P)),
+        modmath::SchoolbookFieldRef::new(from_be::<T>(C::N)),
+    ) else {
+        return false;
+    };
+    verify_inner::<C, modmath::SchoolbookFieldRef<T>>(&fp, &fn_, pubkey, digest, r, s)
+}
+
+/// Shared verify core over a caller-built field pair (`fp` mod p, `fn_`
+/// mod n), generic over any [`FieldOps`]. The two public entries differ
+/// only in how they build the field: [`verify_for_curve`] via the
+/// `Copy` Montgomery [`FieldFor`] selector, [`verify_for_curve_ref`] via
+/// the `Clone` schoolbook field.
+fn verify_inner<C: Curve, F: FieldOps>(
+    fp: &F,
+    fn_: &F,
+    pubkey: &[u8],
+    digest: &[u8],
+    r: &[u8],
+    s: &[u8],
+) -> bool
+where
+    F::Backend: ScalarBytes,
+{
+    const {
         assert!(
             C::P.len() == C::ELEM_BYTES
                 && C::A.len() == C::ELEM_BYTES
@@ -711,30 +836,24 @@ pub fn verify_for_curve<C: Curve, T: FieldFor + ScalarBytes>(
     if digest.is_empty() {
         return false;
     }
-    let p = from_be::<T>(C::P);
-    let n = from_be::<T>(C::N);
-    let zero = T::zero();
+    let p = fp.modulus();
+    let n = fn_.modulus();
+    let zero = <F::Backend as const_num_traits::Zero>::zero();
 
-    let qx = from_be::<T>(&pubkey[1..1 + eb]);
-    let qy = from_be::<T>(&pubkey[1 + eb..1 + 2 * eb]);
-    if !(lt(&qx, &p) && lt(&qy, &p)) {
+    let qx = from_be::<F::Backend>(&pubkey[1..1 + eb]);
+    let qy = from_be::<F::Backend>(&pubkey[1 + eb..1 + 2 * eb]);
+    if !(lt(&qx, p) && lt(&qy, p)) {
         return false;
     }
 
-    let r_int = from_be::<T>(r);
-    let s_int = from_be::<T>(s);
-    if r_int == zero || !lt(&r_int, &n) || s_int == zero || !lt(&s_int, &n) {
+    let r_int = from_be::<F::Backend>(r);
+    let s_int = from_be::<F::Backend>(s);
+    if r_int == zero || !lt(&r_int, n) || s_int == zero || !lt(&s_int, n) {
         return false;
     }
 
-    // Both moduli are odd curve constants; `None` is unreachable but
-    // maps to a clean reject rather than a panic path.
-    let (Some(fp), Some(fn_)) = (T::field(p), T::field(n)) else {
-        return false;
-    };
-
-    let a_res = fp.reduce(&from_be::<T>(C::A));
-    let b_res = fp.reduce(&from_be::<T>(C::B));
+    let a_res = fp.reduce(&from_be::<F::Backend>(C::A));
+    let b_res = fp.reduce(&from_be::<F::Backend>(C::B));
     let q = Point {
         x: fp.reduce(&qx),
         y: fp.reduce(&qy),
@@ -742,7 +861,7 @@ pub fn verify_for_curve<C: Curve, T: FieldFor + ScalarBytes>(
     };
     // SEC1-uncompressed can't encode the identity, so on-curve is the
     // whole point-validation story (cofactor 1: no subgroup check).
-    if !is_on_curve(&fp, &q, &a_res, &b_res) {
+    if !is_on_curve(fp, &q, &a_res, &b_res) {
         return false;
     }
 
@@ -756,15 +875,15 @@ pub fn verify_for_curve<C: Curve, T: FieldFor + ScalarBytes>(
     let u2 = fn_.into_raw(&fn_.mul(&r_res, &s_inv));
 
     let g = Point {
-        x: fp.reduce(&from_be::<T>(C::GX)),
-        y: fp.reduce(&from_be::<T>(C::GY)),
+        x: fp.reduce(&from_be::<F::Backend>(C::GX)),
+        y: fp.reduce(&from_be::<F::Backend>(C::GY)),
         z: fp.one(),
     };
-    let rp = double_scalar_mul(&fp, &a_res, eb * 8, &u1, &g, &u2, &q);
+    let rp = double_scalar_mul(fp, &a_res, eb * 8, &u1, &g, &u2, &q);
 
     // R == identity → reject; otherwise r ≟ R.x mod n (reduce()
     // lands both sides in canonical mod-n form).
-    let Some(x_affine) = to_affine_x(&fp, &rp) else {
+    let Some(x_affine) = to_affine_x(fp, &rp) else {
         return false;
     };
     fn_.reduce(&x_affine) == r_res
@@ -821,11 +940,13 @@ pub mod dangerous {
     /// at a time — single-bit shifts rather than one wide shift per
     /// bit, so it stays linear in the backend's width.
     fn to_be<T: ScalarBytes>(v: &T, out: &mut [u8]) {
-        let mut acc = *v;
+        let mut acc = v.clone();
         for slot in out.iter_mut().rev() {
             let mut b = 0u8;
             for j in 0..8 {
-                if acc & T::one() != T::zero() {
+                // `acc.clone() & one` — by-value `&` consumes its lhs, but
+                // `acc` is reused by the `>>=` below, so don't move it.
+                if acc.clone() & T::one() != T::zero() {
                     b |= 1 << j;
                 }
                 acc >>= 1;
