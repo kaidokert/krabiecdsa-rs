@@ -3,15 +3,15 @@
 
 use core::hint::black_box;
 use cortex_m_rt::entry;
-use krabi_caliper::Unit;
-use krabi_caliper::cortex_m::DwtCycleCounter;
-use krabi_caliper::paired::MaxSpread;
-use krabi_caliper::report::Field;
-use krabi_caliper::rtt::print;
-use krabi_caliper::stack::{CortexM, LinkerStack, StackConfig, StackProbe};
-use krabi_caliper::suite::{FixtureSpec, PairedSuite, PairedSuiteConfig, PairedSuiteFields};
 use fixed_bigint::FixedUInt;
 use hmac::Hmac;
+use krabi_caliper::Unit;
+use krabi_caliper::cortex_m::DwtMeasurementPlatform;
+use krabi_caliper::paired::MaxSpread;
+use krabi_caliper::protocol::rtt::print;
+use krabi_caliper::report::Field;
+use krabi_caliper::stack::{StackProbe, paint_cortex_m_runtime};
+use krabi_caliper::suite::{FixtureSpec, PairedSuite, PairedSuiteConfig, PairedSuiteFields};
 use krabiecdsa::const_num_traits::Ct;
 use krabiecdsa::dangerous::{SigningKey, derive_nonce_rfc6979, sign_prehashed_ct_with_k};
 use krabiecdsa::p256::{self, P256};
@@ -75,10 +75,9 @@ fn configure_clock() -> u32 {
     16_000_000
 }
 
-fn paint_stack() -> StackProbe {
-    // SAFETY: cortex-m-rt defines the writable descending-stack allocation.
-    let stack = unsafe { LinkerStack::<CortexM>::cortex_m_runtime() };
-    StackProbe::paint(&stack, StackConfig::new(STACK_SAFE_ZONE)).unwrap()
+fn paint_stack() -> StackProbe<'static> {
+    // SAFETY: cortex-m-rt owns the single stack described by its linker symbols.
+    unsafe { paint_cortex_m_runtime::<STACK_SAFE_ZONE>() }.unwrap()
 }
 
 fn nonce_once(key: &[u8; 32]) -> bool {
@@ -159,10 +158,10 @@ fn stop() -> ! {
 
 #[entry]
 fn main() -> ! {
-    let mut reporter = krabi_caliper::rtt::init_ct_compatible();
+    let mut reporter = krabi_caliper::protocol::rtt::init_ct_compatible();
     let hclk_hz = configure_clock();
     let mut peripherals = cortex_m::Peripherals::take().unwrap();
-    let mut counter = DwtCycleCounter::enable(
+    let mut platform = DwtMeasurementPlatform::enable(
         &mut peripherals.DCB,
         &mut peripherals.DWT,
         Some(hclk_hz as u64),
@@ -188,7 +187,7 @@ fn main() -> ! {
         Field::u64("max_positive_spread", MAX_POSITIVE_SPREAD),
     ];
     let mut suite = PairedSuite::<_, _, TRIALS>::start(
-        &mut counter,
+        &mut platform,
         &mut reporter,
         PairedSuiteConfig {
             suite: SUITE,
@@ -255,7 +254,8 @@ fn main() -> ! {
     suite
         .negative("negative_early_exit", &ZERO, &KEY_A, negative_early_exit)
         .unwrap();
-    let stack = stack_probe.measure();
+    // SAFETY: this single-threaded firmware exclusively owns its runtime stack.
+    let stack = unsafe { stack_probe.measure() };
     suite
         .stack_measurement(stack, &[Field::token("carrier", "u32x8")])
         .unwrap();

@@ -11,7 +11,7 @@ clock-168mhz = ["dep:stm32f4xx-hal"]
 [dependencies]
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7"
-krabi-caliper = { version = "0.1.0", features = ["cortex-m", "paired", "rtt", "stack"] }
+krabi-caliper = { version = "0.1.0", features = ["cortex-m-dwt", "paired", "rtt", "stack"] }
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
 hmac = { version = "0.12", default-features = false }
 krabiecdsa = { path = "../../ecdsa", features = ["experimental-signing"] }
