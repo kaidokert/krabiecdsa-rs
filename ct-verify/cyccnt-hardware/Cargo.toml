@@ -1,0 +1,19 @@
+[package]
+name = "krabiecdsa-cyccnt-hardware"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+default = ["clock-168mhz"]
+clock-168mhz = ["dep:stm32f4xx-hal"]
+
+[dependencies]
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+krabi-caliper = { version = "0.1.0", features = ["cortex-m", "paired", "rtt", "stack"] }
+fixed-bigint = { version = "0.6.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
+hmac = { version = "0.12", default-features = false }
+krabiecdsa = { path = "../../ecdsa", features = ["experimental-signing"] }
+sha2 = { version = "0.10", default-features = false }
+stm32f4xx-hal = { version = "0.23", default-features = false, features = ["stm32f407"], optional = true }
