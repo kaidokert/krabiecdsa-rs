@@ -10,7 +10,7 @@ use core::fmt::Write;
 use core::hint::black_box;
 use krabi_caliper::report::Field;
 use krabi_caliper::risc_v::{FootprintConfig, MmioTxFifo32, write_mmio32};
-use krabi_caliper::uart::{UartReporter, reporter};
+use krabi_caliper::protocol::uart::{UartReporter, reporter};
 
 type SifiveReporter = UartReporter<MmioTxFifo32<0x1001_3000>>;
 
