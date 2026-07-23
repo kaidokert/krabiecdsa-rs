@@ -45,7 +45,7 @@ use panic_semihosting as _;
 #[cfg(feature = "jtrace-f407")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    krabi_caliper::rtt::print(format_args!("PANIC: {}\n", info));
+    krabi_caliper::protocol::rtt::print(format_args!("PANIC: {}\n", info));
     loop {
         cortex_m::asm::nop();
     }
