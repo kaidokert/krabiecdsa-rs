@@ -3,7 +3,7 @@ resolver = "2"
 members = ["cyccnt-hardware"]
 
 [patch.crates-io]
-krabi-caliper = { git = "https://github.com/kaidokert/krabi-caliper-rs", tag = "v0.1.0-alpha.2" }
+krabi-caliper = { git = "https://github.com/kaidokert/krabi-caliper-rs", tag = "v0.1.0-alpha.4" }
 
 [profile.release]
 codegen-units = 1
