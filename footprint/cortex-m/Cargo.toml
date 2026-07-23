@@ -9,6 +9,7 @@ publish = false
 
 [features]
 baseline = []
+jtrace-f407 = ["cortex-m/critical-section-single-core", "krabi-caliper/rtt"]
 # Curve selectors for the unified `ecdsa_verify` example. Pick exactly one.
 curve_p256 = []
 curve_k256 = []
