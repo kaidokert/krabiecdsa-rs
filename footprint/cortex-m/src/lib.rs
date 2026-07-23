@@ -10,7 +10,10 @@ krabi_caliper::cortex_m_systick_overflow_handler!();
 
 pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backend: &str) {
     let fields = [
-        Field::token("target", krabi_caliper::stack::cortex_m_architecture_name()),
+        Field::token(
+            "architecture",
+            krabi_caliper::stack::cortex_m_architecture_name(),
+        ),
         Field::token("backend", backend),
     ];
     let config = FootprintConfig::new("krabiecdsa-footprint", &fields)

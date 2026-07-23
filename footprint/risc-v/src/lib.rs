@@ -8,9 +8,9 @@
 
 use core::fmt::Write;
 use core::hint::black_box;
+use krabi_caliper::protocol::uart::{UartReporter, reporter};
 use krabi_caliper::report::Field;
 use krabi_caliper::risc_v::{FootprintConfig, MmioTxFifo32, write_mmio32};
-use krabi_caliper::protocol::uart::{UartReporter, reporter};
 
 type SifiveReporter = UartReporter<MmioTxFifo32<0x1001_3000>>;
 
@@ -27,7 +27,7 @@ fn uart_reporter() -> SifiveReporter {
 pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backend: &str) -> ! {
     uart_init();
     let fields = [
-        Field::token("target", "riscv32"),
+        Field::token("architecture", "riscv32"),
         Field::token("backend", backend),
     ];
     // SAFETY: riscv-rt owns the single stack described by its linker symbols.
@@ -56,6 +56,10 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     uart_init();
     let mut reporter = uart_reporter();
     let _ = writeln!(reporter, "PANIC: {}", info);
+    let _ = writeln!(
+        reporter,
+        "EM_OUTCOME schema:1 benchmark:krabiecdsa-footprint status:FAIL"
+    );
     loop {
         core::hint::spin_loop()
     }
