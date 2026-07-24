@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["cyccnt-hardware"]
+
+[patch.crates-io]
+krabi-caliper = "0.1"
+
+[profile.release]
+codegen-units = 1
+incremental = false
+lto = "fat"
+opt-level = "z"
+panic = "abort"

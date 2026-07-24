@@ -14,6 +14,11 @@ ed25519_heapless / rsa_heapless harnesses.
   experimental signer. Requires `qemu-system-arm` and the
   thumb targets (`rustup target add thumbv6m-none-eabi
   thumbv7m-none-eabi thumbv7em-none-eabi`).
+  The hardware follow-up also supports the J-Trace STM32F407VG with
+  `--target thumbv7em-none-eabihf --features jtrace-f407,...`; install that
+  target separately with `rustup target add thumbv7em-none-eabihf`. This path
+  uses RTT and reports stack, raw DWT `dwt_cycles`, and raw SysTick
+  `systick_cycles`.
 - `risc-v/` — RV32IMAC under `qemu-system-riscv32` (sifive_e). The Rust
   runner stops QEMU after its final `EM_OUTCOME` record, so no wrapper process
   is required. Run `cargo krabi-caliper run ecdsa-riscv32`; requires
