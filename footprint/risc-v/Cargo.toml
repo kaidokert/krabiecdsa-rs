@@ -19,6 +19,7 @@ limb_u32 = []
 
 [dependencies]
 riscv-rt = "0.13"
+krabi-caliper = { version = "0.1.0", features = ["stack", "risc-v", "uart"] }
 
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
 krabiecdsa = { path = "../../ecdsa" }

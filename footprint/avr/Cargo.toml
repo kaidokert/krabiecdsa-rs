@@ -19,6 +19,7 @@ curve_p384 = []
 
 [dependencies]
 avr-device = { version = "0.7", features = ["atmega2560", "rt"] }
+krabi-caliper = { version = "0.1.0", features = ["stack", "avr-atmega2560", "ufmt"] }
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
 krabiecdsa = { path = "../../ecdsa" }
 ufmt = { version = "0.2" }
@@ -32,6 +33,7 @@ features = ["arduino-mega2560"]
 panic = "abort"
 lto = "fat"
 opt-level = "z"
+
 codegen-units = 1
 strip = "none"
 debug = "full"

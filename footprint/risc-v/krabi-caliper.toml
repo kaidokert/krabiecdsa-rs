@@ -1,0 +1,50 @@
+[profiles.qemu-riscv32]
+preset = "qemu-riscv32-sifive-e"
+timeout-seconds = 300
+
+[[case-sets.ecdsa-verify]]
+name = "baseline"
+example = "baseline"
+features = ["baseline"]
+expected-benchmark = "krabiecdsa-footprint"
+
+[[case-sets.ecdsa-verify]]
+name = "p256-u8"
+example = "ecdsa_verify"
+features = ["curve_p256", "limb_u8"]
+expected-benchmark = "krabiecdsa-footprint"
+
+[[case-sets.ecdsa-verify]]
+name = "p256-u32"
+example = "ecdsa_verify"
+features = ["curve_p256", "limb_u32"]
+expected-benchmark = "krabiecdsa-footprint"
+
+[[case-sets.ecdsa-verify]]
+name = "k256-u8"
+example = "ecdsa_verify"
+features = ["curve_k256", "limb_u8"]
+expected-benchmark = "krabiecdsa-footprint"
+
+[[case-sets.ecdsa-verify]]
+name = "k256-u32"
+example = "ecdsa_verify"
+features = ["curve_k256", "limb_u32"]
+expected-benchmark = "krabiecdsa-footprint"
+
+[[case-sets.ecdsa-verify]]
+name = "p384-u8"
+example = "ecdsa_verify"
+features = ["curve_p384", "limb_u8"]
+expected-benchmark = "krabiecdsa-footprint"
+
+[[case-sets.ecdsa-verify]]
+name = "p384-u32"
+example = "ecdsa_verify"
+features = ["curve_p384", "limb_u32"]
+expected-benchmark = "krabiecdsa-footprint"
+
+[campaigns.ecdsa-riscv32]
+profile = "qemu-riscv32"
+case-set = "ecdsa-verify"
+baseline-case = "baseline"

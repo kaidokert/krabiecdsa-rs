@@ -8,41 +8,38 @@
 
 use core::fmt::Write;
 use core::hint::black_box;
+use krabi_caliper::protocol::uart::{UartReporter, reporter};
+use krabi_caliper::report::Field;
+use krabi_caliper::risc_v::{FootprintConfig, MmioTxFifo32, write_mmio32};
 
-pub mod cyclecount;
-pub mod stack;
-pub mod uart;
+type SifiveReporter = UartReporter<MmioTxFifo32<0x1001_3000>>;
 
-use cyclecount::CycleCounter;
-use stack::{check_stack_high_water_mark_inner, paint_stack_inner};
-use uart::{UartWriter, uart_init};
+fn uart_init() {
+    // SAFETY: sifive_e UART0 is exclusively owned by this single-core fixture.
+    unsafe { write_mmio32(0x1001_3008, 1) }
+}
+
+fn uart_reporter() -> SifiveReporter {
+    // SAFETY: sifive_e UART0 is exclusively owned by this single-core fixture.
+    reporter(unsafe { MmioTxFifo32::new() })
+}
 
 pub fn test_fixture<const SAFE_ZONE_BYTES: usize>(testable: fn() -> bool, backend: &str) -> ! {
     uart_init();
-
-    paint_stack_inner::<SAFE_ZONE_BYTES>();
-    let counter = CycleCounter::new();
-    let result = testable();
-    let elapsed = counter.elapsed() / 1000;
-    let stack = check_stack_high_water_mark_inner::<SAFE_ZONE_BYTES>();
-
-    let mut w = UartWriter;
-    if result {
-        let _ = writeln!(w, "ecdsa ACCEPT");
-    } else {
-        let _ = writeln!(w, "ecdsa REJECT");
+    let fields = [
+        Field::token("architecture", "riscv32"),
+        Field::token("backend", backend),
+    ];
+    // SAFETY: riscv-rt owns the single stack described by its linker symbols.
+    unsafe {
+        krabi_caliper::risc_v::run_footprint::<SAFE_ZONE_BYTES, _>(
+            uart_reporter,
+            FootprintConfig::new("krabiecdsa-footprint", &fields),
+            testable,
+        )
     }
-    let _ = write!(
-        w,
-        "METRIC stack:{} cycles:{} target:riscv32 backend:",
-        stack, elapsed
-    );
-    let _ = w.write_str(backend);
-    let _ = w.write_str("\n");
-
-    loop {
-        unsafe { core::arch::asm!("wfi") }
-    }
+    .unwrap();
+    krabi_caliper::risc_v::park()
 }
 
 /// Baseline stand-in for a verify: touches the same fixture bytes so
@@ -57,9 +54,13 @@ pub fn fake_verify(pubkey: &[u8], digest: &[u8], r: &[u8], s: &[u8]) -> bool {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     uart_init();
-    let mut w = UartWriter;
-    let _ = writeln!(w, "PANIC: {}", info);
+    let mut reporter = uart_reporter();
+    let _ = writeln!(reporter, "PANIC: {}", info);
+    let _ = writeln!(
+        reporter,
+        "EM_OUTCOME schema:1 benchmark:krabiecdsa-footprint status:FAIL"
+    );
     loop {
-        unsafe { core::arch::asm!("wfi") }
+        core::hint::spin_loop()
     }
 }

@@ -32,8 +32,11 @@ fn main() -> ! {
             };
             let mut r = [0u8; 32];
             let mut s = [0u8; 32];
-            let ok =
-                key.sign_prehashed::<Nct, CtBackend, Hmac<Sha256>>(&fixture::DIGEST, &mut r, &mut s);
+            let ok = key.sign_prehashed::<Nct, CtBackend, Hmac<Sha256>>(
+                &fixture::DIGEST,
+                &mut r,
+                &mut s,
+            );
             // Keep the serialized signature observable: under LTO +
             // opt-level="z" the optimizer could otherwise discard the
             // r/s write-back and undercount the measured work.
@@ -43,5 +46,7 @@ fn main() -> ! {
         },
         "sign-u32",
     );
-    loop {}
+    loop {
+        cortex_m::asm::nop();
+    }
 }

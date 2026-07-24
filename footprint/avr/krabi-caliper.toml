@@ -1,0 +1,50 @@
+[profiles.avr]
+preset = "simavr-atmega2560"
+toolchain = "nightly-2025-11-01"
+timeout-seconds = 600
+
+[[case-sets.ecdsa-avr-full]]
+name = "baseline"
+example = "baseline"
+features = ["baseline"]
+expected-benchmark = "krabiecdsa-footprint"
+
+[[case-sets.ecdsa-avr-full]]
+name = "p256"
+example = "ecdsa_verify"
+features = ["curve_p256"]
+expected-benchmark = "krabiecdsa-footprint"
+
+[[case-sets.ecdsa-avr-full]]
+name = "k256"
+example = "ecdsa_verify"
+features = ["curve_k256"]
+expected-benchmark = "krabiecdsa-footprint"
+
+[[case-sets.ecdsa-avr-full]]
+name = "p384"
+example = "ecdsa_verify"
+features = ["curve_p384"]
+expected-benchmark = "krabiecdsa-footprint"
+
+[[case-sets.ecdsa-avr-fast]]
+name = "baseline"
+example = "baseline"
+features = ["baseline"]
+expected-benchmark = "krabiecdsa-footprint"
+
+[[case-sets.ecdsa-avr-fast]]
+name = "p256"
+example = "ecdsa_verify"
+features = ["curve_p256"]
+expected-benchmark = "krabiecdsa-footprint"
+
+[campaigns.ecdsa-avr]
+profile = "avr"
+case-set = "ecdsa-avr-full"
+baseline-case = "baseline"
+
+[campaigns.ecdsa-avr-fast]
+profile = "avr"
+case-set = "ecdsa-avr-fast"
+baseline-case = "baseline"

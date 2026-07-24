@@ -17,9 +17,10 @@ const _: () = {
 };
 
 use fixed_bigint::FixedUInt;
+use krabi_caliper::avr::FootprintConfig;
+use krabi_caliper::report::{Field, UfmtReporter};
 use krabiecdsa::verify_for_curve;
 use krabiecdsa_footprint_avr as _;
-use krabiecdsa_footprint_avr::stack_measurement::*;
 
 mod fixture {
     #[cfg(feature = "curve_p256")]
@@ -30,10 +31,10 @@ mod fixture {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../fixtures/p384.rs"));
 }
 
-#[cfg(feature = "curve_p256")]
-use krabiecdsa::p256::P256 as Curve;
 #[cfg(feature = "curve_k256")]
 use krabiecdsa::k256::K256 as Curve;
+#[cfg(feature = "curve_p256")]
+use krabiecdsa::p256::P256 as Curve;
 #[cfg(feature = "curve_p384")]
 use krabiecdsa::p384::P384 as Curve;
 
@@ -44,35 +45,31 @@ type Backend = FixedUInt<u8, 48>;
 
 #[arduino_hal::entry]
 fn main() -> ! {
-    let dp = arduino_hal::Peripherals::take().unwrap();
+    let mut dp = arduino_hal::Peripherals::take().unwrap();
     let pins = arduino_hal::pins!(dp);
-    let mut serial = arduino_hal::default_serial!(dp, pins, 57600);
+    let serial = arduino_hal::default_serial!(dp, pins, 57600);
 
-    unsafe { fill_stack_with_watermark() };
-    let counter = krabiecdsa_footprint_avr::cyclecount::CycleCounter::start(&dp.TC1);
-    let result = verify_for_curve::<Curve, Backend>(
-        &fixture::PUBKEY,
-        &fixture::DIGEST,
-        &fixture::R,
-        &fixture::S,
-    );
-    let ticks = counter.elapsed_ticks(&dp.TC1);
-    let ms = counter.elapsed_ms(&dp.TC1);
-    let stack_used = unsafe { measure_stack_usage() };
-
-    if result {
-        ufmt::uwriteln!(&mut serial, "ecdsa ACCEPT").ok();
-    } else {
-        ufmt::uwriteln!(&mut serial, "ecdsa REJECT").ok();
+    let fields = [
+        Field::token("architecture", "atmega2560"),
+        Field::token("operation", "verify"),
+    ];
+    let mut reporter = UfmtReporter::new(serial);
+    // SAFETY: ATmega2560 SRAM above `_end` is reserved for this single stack.
+    unsafe {
+        krabi_caliper::avr::run_atmega2560_footprint::<64, _>(
+            &mut dp.TC1,
+            &mut reporter,
+            FootprintConfig::new("krabiecdsa-footprint", &fields).sentinel(0xce),
+            || {
+                verify_for_curve::<Curve, Backend>(
+                    &fixture::PUBKEY,
+                    &fixture::DIGEST,
+                    &fixture::R,
+                    &fixture::S,
+                )
+            },
+        )
     }
-    ufmt::uwriteln!(&mut serial, "Time: {} ms ({} ticks)", ms, ticks).ok();
-    ufmt::uwriteln!(&mut serial, "Max stack usage: {} bytes", stack_used).ok();
-
-    // Interrupts off before parking: simavr detects sleep-with-
-    // interrupts-disabled and exits instead of burning the wrapper
-    // timeout.
-    avr_device::interrupt::disable();
-    loop {
-        unsafe { core::arch::asm!("sleep") }
-    }
+    .unwrap();
+    krabi_caliper::avr::park_simavr(&dp.CPU)
 }
