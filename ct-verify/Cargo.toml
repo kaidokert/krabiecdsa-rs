@@ -1,0 +1,29 @@
+# Nested workspace for the constant-time verification harness. Kept
+# separate from the crate (which lives in `ecdsa/`, a standalone package)
+# so the pinned deterministic release profile below governs every harness
+# build without touching `krabiecdsa`'s own `--release` builds. Same
+# isolation pattern as `footprint/*`.
+[workspace]
+resolver = "2"
+members = [
+    "ct-fixtures",
+    "ct-driver",
+    "ct-ctgrind",
+    "panic-free-audit",
+]
+default-members = ["ct-fixtures", "ct-driver", "ct-ctgrind", "panic-free-audit"]
+
+# Deterministic codegen: the asm-grep / taint layers must inspect the
+# exact machine code a deployment build emits, and a passing run "locks"
+# that inspection — so a toolchain bump that perturbs codegen surfaces as
+# a reviewable diff rather than silent drift. Matches what a
+# size-conscious embedded deployment builds.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = "z"
+panic = "abort"
+incremental = false
+
+[patch.crates-io]
+krabi-caliper = { git = "https://github.com/kaidokert/krabi-caliper-rs", tag = "v0.1.0-alpha.4" }

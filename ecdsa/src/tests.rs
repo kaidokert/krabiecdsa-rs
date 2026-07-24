@@ -555,7 +555,7 @@ mod rustcrypto_signing {
 
     #[test]
     fn prehash_signer_roundtrip() {
-        let signer = PrehashSigningKey::<P256, U256, U256Ct, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        let signer = PrehashSigningKey::<P256, U256Ct, Hmac<Sha256>>::from_bytes(&D).unwrap();
         let sig: [u8; 64] = signer.sign_prehash(&DIGEST).expect("sign");
         assert_eq!(sig, RS);
 
@@ -572,7 +572,7 @@ mod rustcrypto_signing {
         // d = 0 and d = n are rejected at construction (constant-time
         // range check), unlike the late-bound SigningKey which defers to
         // use-time rejection.
-        type K = PrehashSigningKey<P256, U256, U256Ct, Hmac<Sha256>>;
+        type K = PrehashSigningKey<P256, U256Ct, Hmac<Sha256>>;
         const N: [u8; 32] = hx("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
         assert!(K::from_bytes(&[0u8; 32]).is_none());
         assert!(K::from_bytes(&N).is_none());

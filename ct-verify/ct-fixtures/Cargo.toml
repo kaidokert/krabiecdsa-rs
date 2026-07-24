@@ -1,0 +1,32 @@
+[package]
+name = "ct-fixtures"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.87"
+publish = false
+description = "Constant-time fixtures pinning krabiecdsa's CT sign path for the ct-verify gates."
+
+# `staticlib` for the driver (cross-build → llvm-objdump the `.a`);
+# `rlib` so the taint harness can link the same symbols as a dependency.
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[features]
+# `panic-handler` makes the crate `no_std` with its own `#[panic_handler]`,
+# needed for the cross-built staticlib the asm-grep driver disassembles
+# (the driver passes `--features panic-handler`). Off by default so the
+# ctgrind crate can link this as an rlib into its std binary, where std
+# supplies the panic handler and a second would collide.
+default = []
+panic-handler = []
+# Full RFC 6979 deterministic-sign fixture (taints `d` only; the nonce is
+# derived internally). Pulls the HMAC-DRBG in, so it's opt-in: the taint
+# harness enables it, the asm-ladder driver (which only needs the scalar
+# ladder) does not.
+deterministic = ["dep:hmac", "dep:sha2"]
+
+[dependencies]
+krabiecdsa = { path = "../../ecdsa", default-features = false, features = ["experimental-signing"] }
+fixed-bigint = { version = "0.6.0", default-features = false, features = ["cios", "zeroize"] }
+hmac = { version = "0.12", default-features = false, optional = true }
+sha2 = { version = "0.10", default-features = false, optional = true }

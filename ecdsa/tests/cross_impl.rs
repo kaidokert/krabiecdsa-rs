@@ -102,7 +102,7 @@ where
 
         let mut rc = vec![0u8; C::ELEM_BYTES];
         let mut sc = vec![0u8; C::ELEM_BYTES];
-        assert!(sign_prehashed_ct::<C, T, Tct, M>(
+        assert!(sign_prehashed_ct::<C, Tct, M>(
             &d, &digest, &mut rc, &mut sc
         ));
         assert_eq!(rc, want_r, "ct r mismatch");

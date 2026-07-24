@@ -197,7 +197,7 @@ fn ct_deterministic_p256_sha256() {
         let digest = hx(v.digest);
         let mut r = [0u8; 32];
         let mut s = [0u8; 32];
-        assert!(sign_prehashed_ct::<P256, U256, U256Ct, Hmac<Sha256>>(
+        assert!(sign_prehashed_ct::<P256, U256Ct, Hmac<Sha256>>(
             &d, &digest, &mut r, &mut s
         ));
         assert_eq!(r.to_vec(), hx(v.r), "ct r mismatch for {}", v.digest);
@@ -214,7 +214,7 @@ fn ct_deterministic_p384_sha384() {
         let digest = hx(v.digest);
         let mut r = [0u8; 48];
         let mut s = [0u8; 48];
-        assert!(sign_prehashed_ct::<P384, U384, U384Ct, Hmac<Sha384>>(
+        assert!(sign_prehashed_ct::<P384, U384Ct, Hmac<Sha384>>(
             &d, &digest, &mut r, &mut s
         ));
         assert_eq!(r.to_vec(), hx(v.r), "ct r mismatch for {}", v.digest);
@@ -238,7 +238,7 @@ fn signing_key_p256() {
         let digest = hx(v.digest);
         let mut r = [0u8; 32];
         let mut s = [0u8; 32];
-        assert!(key.sign_prehashed::<U256, U256Ct, Hmac<Sha256>>(&digest, &mut r, &mut s));
+        assert!(key.sign_prehashed::<U256Ct, Hmac<Sha256>>(&digest, &mut r, &mut s));
         assert_eq!(r.to_vec(), hx(v.r));
         assert_eq!(s.to_vec(), hx(v.s));
         assert!(verify_for_curve::<P256, U256>(&pk, &digest, &r, &s));
@@ -255,7 +255,7 @@ fn signing_key_p384() {
     let digest = hx(v.digest);
     let mut r = [0u8; 48];
     let mut s = [0u8; 48];
-    assert!(key.sign_prehashed::<U384, U384Ct, Hmac<Sha384>>(&digest, &mut r, &mut s));
+    assert!(key.sign_prehashed::<U384Ct, Hmac<Sha384>>(&digest, &mut r, &mut s));
     assert_eq!(r.to_vec(), hx(v.r));
     assert_eq!(s.to_vec(), hx(v.s));
     assert!(verify_for_curve::<P384, U384>(&pk, &digest, &r, &s));
@@ -276,7 +276,7 @@ fn signing_key_wrong_length_rejected() {
         assert!(!key.verifying_key_sec1::<U256Ct>(&mut pk));
         let mut r = [0u8; 32];
         let mut s = [0u8; 32];
-        assert!(!key.sign_prehashed::<U256, U256Ct, Hmac<Sha256>>(&digest, &mut r, &mut s));
+        assert!(!key.sign_prehashed::<U256Ct, Hmac<Sha256>>(&digest, &mut r, &mut s));
     }
 
     // Wrong output-buffer lengths are rejected for an otherwise valid key.
@@ -285,8 +285,8 @@ fn signing_key_wrong_length_rejected() {
     assert!(!key.verifying_key_sec1::<U256Ct>(&mut [0u8; 66]));
     let mut r = [0u8; 32];
     let mut s = [0u8; 32];
-    assert!(!key.sign_prehashed::<U256, U256Ct, Hmac<Sha256>>(&digest, &mut r[..31], &mut s));
-    assert!(!key.sign_prehashed::<U256, U256Ct, Hmac<Sha256>>(&digest, &mut r, &mut s[..31]));
+    assert!(!key.sign_prehashed::<U256Ct, Hmac<Sha256>>(&digest, &mut r[..31], &mut s));
+    assert!(!key.sign_prehashed::<U256Ct, Hmac<Sha256>>(&digest, &mut r, &mut s[..31]));
 }
 
 #[test]

@@ -402,15 +402,13 @@ macro_rules! define_curve {
 
             /// RustCrypto signer: `sign_prehash` returns the P1363
             /// `r || s` (fixed `2·ELEM_BYTES`), RFC 6979-deterministic.
-            /// The signature arithmetic is constant-time, but RFC 6979
-            /// nonce derivation still runs on the Nct backend `T` (the
-            /// documented residual timing gap). Experimental — see
-            /// [`dangerous`](crate::dangerous).
+            /// The whole deterministic sign — nonce derivation included —
+            /// is constant-time up to RFC 6979's inherent rejection-loop
+            /// count. Experimental — see [`dangerous`](crate::dangerous).
             #[cfg(feature = "experimental-signing")]
-            impl<T, Tct, M> signature::hazmat::PrehashSigner<[u8; 2 * $eb]>
-                for crate::dangerous::PrehashSigningKey<$marker, T, Tct, M>
+            impl<Tct, M> signature::hazmat::PrehashSigner<[u8; 2 * $eb]>
+                for crate::dangerous::PrehashSigningKey<$marker, Tct, M>
             where
-                T: UnsignedModularInt + FieldFor,
                 Tct: crate::dangerous::ConstantTimeInt,
                 M: digest::KeyInit + digest::Mac,
             {
@@ -1054,6 +1052,24 @@ pub mod dangerous {
     const MAX_HLEN: usize = 64;
     const MAX_QLEN_BYTES: usize = 66;
 
+    /// Copy `src` into the front of `dst`, panic-free. The destination
+    /// sub-slice is sized *from* `src.len()`, so the `copy_from_slice`
+    /// lengths match by construction and the optimizer drops both the
+    /// range-check and the length-mismatch panic branches — the RFC 6979
+    /// DRBG slices on a runtime `hlen` the optimizer can't otherwise
+    /// prove in-bounds. `None` if `dst` is too short.
+    fn copy_prefix(dst: &mut [u8], src: &[u8]) -> Option<()> {
+        // Byte loop rather than `copy_from_slice`: the latter's internal
+        // `self.len() == src.len()` assert is not always elided even
+        // when the destination is `get_mut(..src.len())`, leaving a
+        // reachable `len_mismatch` panic. `zip` needs no such proof.
+        let d = dst.get_mut(..src.len())?;
+        for (di, si) in d.iter_mut().zip(src.iter()) {
+            *di = *si;
+        }
+        Some(())
+    }
+
     /// `HMAC_key(parts…)` into `out`, returning the tag length. `key`
     /// and `out` must not alias (the K-update steps copy K aside).
     fn hmac_into<M: digest::KeyInit + digest::Mac>(
@@ -1066,10 +1082,7 @@ pub mod dangerous {
             mac.update(p);
         }
         let tag = mac.finalize().into_bytes();
-        if tag.len() > out.len() {
-            return None;
-        }
-        out[..tag.len()].copy_from_slice(&tag);
+        copy_prefix(out, &tag)?;
         Some(tag.len())
     }
 
@@ -1079,11 +1092,19 @@ pub mod dangerous {
     /// its hash MUST match the one that produced `digest`.
     ///
     /// Variable-time (experimental — see the [module warning](self)).
-    fn rfc6979_nonce<C: Curve, T: UnsignedModularInt, M: digest::KeyInit + digest::Mac>(
+    fn rfc6979_nonce<C: Curve, T: ScalarBytes, M: digest::KeyInit + digest::Mac>(
         x_octets: &[u8],
         h1_octets: &[u8],
         n: &T,
         qlen: usize,
+        // Candidate acceptance test `1 <= cand < n`. The caller supplies
+        // it so the same HMAC-DRBG loop serves the vartime and the
+        // constant-time derivations without drift — the Nct caller passes
+        // a `<`-based test, the Ct caller a `ct_lt`/`ct_is_zero` one. The
+        // number of loop iterations (reject probability ~2⁻³²) is the
+        // one timing signal inherent to RFC 6979; the *comparison* is
+        // what the Ct caller keeps constant-time.
+        in_range: impl Fn(&T, &T) -> bool,
     ) -> Option<T> {
         let hlen = <M as digest::OutputSizeUser>::output_size();
         if hlen > MAX_HLEN {
@@ -1099,48 +1120,48 @@ pub mod dangerous {
         // (input and output V would otherwise be the same buffer).
         let mut scratch = Zeroizing::new([0u8; MAX_HLEN]);
 
-        // V = HMAC_K(V) via scratch.
+        // V = HMAC_K(V) via scratch. Fallible slicing keeps the whole
+        // DRBG panic-free (see `copy_prefix`).
         let update_v = |k: &[u8], v: &mut [u8], scratch: &mut [u8]| -> Option<()> {
-            hmac_into::<M>(k, &[&v[..hlen]], scratch)?;
-            v[..hlen].copy_from_slice(&scratch[..hlen]);
-            Some(())
+            hmac_into::<M>(k, &[v.get(..hlen)?], scratch)?;
+            copy_prefix(v, scratch.get(..hlen)?)
         };
 
         // K = HMAC_K(V || 0x00 || x || h1); V = HMAC_K(V)
-        scratch[..hlen].copy_from_slice(&k[..hlen]);
+        copy_prefix(&mut scratch[..], k.get(..hlen)?)?;
         hmac_into::<M>(
-            &scratch[..hlen],
-            &[&v[..hlen], &[0x00], x_octets, h1_octets],
+            scratch.get(..hlen)?,
+            &[v.get(..hlen)?, &[0x00], x_octets, h1_octets],
             &mut k[..],
         )?;
-        update_v(&k[..hlen], &mut v[..], &mut scratch[..])?;
+        update_v(k.get(..hlen)?, &mut v[..], &mut scratch[..])?;
         // K = HMAC_K(V || 0x01 || x || h1); V = HMAC_K(V)
-        scratch[..hlen].copy_from_slice(&k[..hlen]);
+        copy_prefix(&mut scratch[..], k.get(..hlen)?)?;
         hmac_into::<M>(
-            &scratch[..hlen],
-            &[&v[..hlen], &[0x01], x_octets, h1_octets],
+            scratch.get(..hlen)?,
+            &[v.get(..hlen)?, &[0x01], x_octets, h1_octets],
             &mut k[..],
         )?;
-        update_v(&k[..hlen], &mut v[..], &mut scratch[..])?;
+        update_v(k.get(..hlen)?, &mut v[..], &mut scratch[..])?;
 
         loop {
             // T = leftmost qlen bits, accumulated hlen bytes at a time.
             let mut t = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
             let mut tlen = 0usize;
             while tlen < eb {
-                update_v(&k[..hlen], &mut v[..], &mut scratch[..])?;
+                update_v(k.get(..hlen)?, &mut v[..], &mut scratch[..])?;
                 let take = core::cmp::min(hlen, eb - tlen);
-                t[tlen..tlen + take].copy_from_slice(&v[..take]);
+                copy_prefix(t.get_mut(tlen..)?, v.get(..take)?)?;
                 tlen += take;
             }
-            let cand = hash_to_scalar::<T>(&t[..eb], qlen);
-            if cand != T::zero() && lt(&cand, n) {
+            let cand = hash_to_scalar::<T>(t.get(..eb)?, qlen);
+            if in_range(&cand, n) {
                 return Some(cand);
             }
             // Candidate out of range (astronomically rare): reseed.
-            scratch[..hlen].copy_from_slice(&k[..hlen]);
-            hmac_into::<M>(&scratch[..hlen], &[&v[..hlen], &[0x00]], &mut k[..])?;
-            update_v(&k[..hlen], &mut v[..], &mut scratch[..])?;
+            copy_prefix(&mut scratch[..], k.get(..hlen)?)?;
+            hmac_into::<M>(scratch.get(..hlen)?, &[v.get(..hlen)?, &[0x00]], &mut k[..])?;
+            update_v(k.get(..hlen)?, &mut v[..], &mut scratch[..])?;
         }
     }
 
@@ -1185,10 +1206,82 @@ pub mod dangerous {
         let e = fn_.into_raw(&fn_.reduce(&hash_to_scalar::<T>(digest, qlen)));
         to_be::<T>(&e, &mut h1[..eb]);
 
-        let Some(mut k) = rfc6979_nonce::<C, T, M>(private_key, &h1[..eb], &n, qlen) else {
+        let Some(mut k) = rfc6979_nonce::<C, T, M>(private_key, &h1[..eb], &n, qlen, |cand, n| {
+            *cand != T::zero() && lt(cand, n)
+        }) else {
             return false;
         };
         to_be::<T>(&k, out_k);
+        k.zeroize();
+        true
+    }
+
+    /// **Constant-time** RFC 6979 nonce derivation — the `Ct`-backend
+    /// analogue of [`derive_nonce_rfc6979`], written big-endian to
+    /// `out_k`. Reproduces the same deterministic `k` byte-for-byte
+    /// (validated against the RFC vectors), but the secret-dependent
+    /// candidate range check runs on `subtle`'s constant-time
+    /// comparisons instead of the vartime `<`. The HMAC-DRBG is
+    /// data-oblivious to begin with (SHA-2/HMAC branch on neither key
+    /// nor message), so this closes the derivation's timing gap up to
+    /// the RFC's inherent rejection-loop count (reject probability
+    /// ~2⁻³², i.e. effectively always one iteration).
+    ///
+    /// Same experimental caveats as the rest of this module.
+    #[must_use]
+    pub fn derive_nonce_rfc6979_ct<
+        C: Curve,
+        Tct: ConstantTimeInt,
+        M: digest::KeyInit + digest::Mac,
+    >(
+        private_key: &[u8],
+        digest: &[u8],
+        out_k: &mut [u8],
+    ) -> bool {
+        const {
+            assert!(
+                C::ELEM_BYTES <= MAX_QLEN_BYTES,
+                "Curve's ELEM_BYTES exceeds MAX_QLEN_BYTES"
+            );
+        }
+        let eb = C::ELEM_BYTES;
+        if private_key.len() != eb || out_k.len() != eb || digest.is_empty() {
+            return false;
+        }
+        let n = from_be::<Tct>(C::N);
+        // d is secret — validate it in constant time.
+        let d = from_be::<Tct>(private_key);
+        if !bool::from(!d.ct_is_zero() & d.ct_lt(&n)) {
+            return false;
+        }
+        // `n` is `Copy` (ConstantTimeInt: Copy), so building the field
+        // leaves the local `n` live for the range predicate below.
+        let Some(fn_) = FieldCt::new(n) else {
+            return false;
+        };
+        let qlen = bitlen_be(C::N);
+
+        // h1 = bits2octets(digest) = int2octets(bits2int(digest) mod n).
+        // The digest is public, so this reduction carries no secret; it
+        // runs on the Ct field only for uniformity with the sign path.
+        let mut h1 = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
+        let e = fn_.into_raw(&fn_.reduce(&hash_to_scalar::<Tct>(digest, qlen)));
+        let Some(h1_slot) = h1.get_mut(..eb) else {
+            return false;
+        };
+        to_be::<Tct>(&e, h1_slot);
+        let Some(h1_octets) = h1.get(..eb) else {
+            return false;
+        };
+
+        let Some(mut k) =
+            rfc6979_nonce::<C, Tct, M>(private_key, h1_octets, &n, qlen, |cand, n| {
+                bool::from(!cand.ct_is_zero() & cand.ct_lt(n))
+            })
+        else {
+            return false;
+        };
+        to_be::<Tct>(&k, out_k);
         k.zeroize();
         true
     }
@@ -1307,6 +1400,12 @@ pub mod dangerous {
     /// inverses, and the identity, with **no data-dependent branches**
     /// — which is what makes the ladder constant-time. `b3` is `3·b`.
     #[allow(clippy::many_single_char_names)]
+    // Kept a distinct symbol (never inlined into the sign) so the
+    // ct-verify gates can attest it in isolation: the taint gate's
+    // declassification suppressions for the public pass/fail outcomes are
+    // scoped to the sign frame, and a real leak in this branchless
+    // primitive must surface here, not there.
+    #[inline(never)]
     fn add_rcb<'f, T: ConstantTimeInt>(
         f: &'f FieldCt<T>,
         a: &ResidueCt<'f, T>,
@@ -1366,6 +1465,8 @@ pub mod dangerous {
     /// add result on set bits. Every iteration does the same two
     /// complete additions and one conditional swap regardless of the
     /// scalar, so timing carries no information about it.
+    // Distinct symbol for the ct-verify gates — see `add_rcb`.
+    #[inline(never)]
     fn scalar_mul_ct<'f, T: ConstantTimeInt>(
         f: &'f FieldCt<T>,
         a: &ResidueCt<'f, T>,
@@ -1487,19 +1588,15 @@ pub mod dangerous {
     }
 
     /// **Constant-time** ECDSA signing with an RFC 6979 deterministic
-    /// nonce. The nonce is derived on the Nct backend `T` (that part
-    /// is not yet constant-time — a documented residual gap), then the
-    /// secret signature math runs constant-time on the Ct backend
-    /// `Tct` via [`sign_prehashed_ct_with_k`]. `M` is the HMAC.
+    /// nonce. Both halves run on the Ct backend `Tct`: the nonce is
+    /// derived via [`derive_nonce_rfc6979_ct`], then the secret
+    /// signature math runs constant-time via
+    /// [`sign_prehashed_ct_with_k`]. `M` is the HMAC whose hash matches
+    /// the digest's (e.g. `Hmac<Sha256>` for a SHA-256 digest).
     ///
     /// Experimental — see the [module warning](self).
     #[must_use]
-    pub fn sign_prehashed_ct<
-        C: Curve,
-        T: UnsignedModularInt + FieldFor,
-        Tct: ConstantTimeInt,
-        M: digest::KeyInit + digest::Mac,
-    >(
+    pub fn sign_prehashed_ct<C: Curve, Tct: ConstantTimeInt, M: digest::KeyInit + digest::Mac>(
         private_key: &[u8],
         digest: &[u8],
         out_r: &mut [u8],
@@ -1507,7 +1604,7 @@ pub mod dangerous {
     ) -> bool {
         let eb = C::ELEM_BYTES;
         let mut k = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
-        if !derive_nonce_rfc6979::<C, T, M>(private_key, digest, &mut k[..eb]) {
+        if !derive_nonce_rfc6979_ct::<C, Tct, M>(private_key, digest, &mut k[..eb]) {
             return false;
         }
         sign_prehashed_ct_with_k::<C, Tct>(private_key, digest, &k[..eb], out_r, out_s)
@@ -1567,23 +1664,18 @@ pub mod dangerous {
         }
 
         /// Sign `digest` with an RFC 6979 nonce (see
-        /// [`sign_prehashed_ct`]). `T` is the Nct backend used for
-        /// nonce derivation, `Tct` the Ct backend for the secret math,
-        /// `M` the HMAC. The signature arithmetic is constant-time; RFC
-        /// 6979 nonce derivation still runs on the Nct backend `T` and is
-        /// the documented residual timing gap.
+        /// [`sign_prehashed_ct`]). `Tct` is the Ct backend for both the
+        /// nonce derivation and the secret signature math; `M` the HMAC.
+        /// The whole deterministic sign is constant-time up to RFC
+        /// 6979's inherent rejection-loop count.
         #[must_use]
-        pub fn sign_prehashed<
-            T: UnsignedModularInt + FieldFor,
-            Tct: ConstantTimeInt,
-            M: digest::KeyInit + digest::Mac,
-        >(
+        pub fn sign_prehashed<Tct: ConstantTimeInt, M: digest::KeyInit + digest::Mac>(
             &self,
             digest: &[u8],
             out_r: &mut [u8],
             out_s: &mut [u8],
         ) -> bool {
-            sign_prehashed_ct::<C, T, Tct, M>(&self.d[..C::ELEM_BYTES], digest, out_r, out_s)
+            sign_prehashed_ct::<C, Tct, M>(&self.d[..C::ELEM_BYTES], digest, out_r, out_s)
         }
 
         /// Derive the SEC1-uncompressed public key `0x04 || X || Y`
@@ -1630,32 +1722,28 @@ pub mod dangerous {
         }
     }
 
-    /// Zero-size marker binding the backends/HMAC without owning them
+    /// Zero-size marker binding the backend/HMAC without owning them
     /// (so auto traits stay unconditional), factored out to keep the
     /// struct field readable.
-    type BackendMarker<T, Tct, M> = core::marker::PhantomData<fn() -> (T, Tct, M)>;
+    type BackendMarker<Tct, M> = core::marker::PhantomData<fn() -> (Tct, M)>;
 
-    /// A [`SigningKey`] with its backends and HMAC bound, so it can
+    /// A [`SigningKey`] with its backend and HMAC bound, so it can
     /// carry the RustCrypto `signature::hazmat::PrehashSigner` impl
     /// (which has no room for per-call type parameters). The impl is
     /// emitted per curve because the signature is a fixed
     /// `[u8; 2·ELEM_BYTES]` — the same reason
     /// [`PrehashVerifier`](signature::hazmat::PrehashVerifier) lives
-    /// in the curve modules. `T` is the Nct nonce backend, `Tct` the
-    /// Ct math backend, `M` the HMAC.
+    /// in the curve modules. `Tct` is the Ct backend (nonce derivation
+    /// and secret math both), `M` the HMAC.
     ///
     /// Experimental — see the [module warning](self).
-    pub struct PrehashSigningKey<C: Curve, T, Tct, M> {
+    pub struct PrehashSigningKey<C: Curve, Tct, M> {
         key: SigningKey<C>,
-        _p: BackendMarker<T, Tct, M>,
+        _p: BackendMarker<Tct, M>,
     }
 
-    impl<
-        C: Curve,
-        T: UnsignedModularInt + FieldFor,
-        Tct: ConstantTimeInt,
-        M: digest::KeyInit + digest::Mac,
-    > PrehashSigningKey<C, T, Tct, M>
+    impl<C: Curve, Tct: ConstantTimeInt, M: digest::KeyInit + digest::Mac>
+        PrehashSigningKey<C, Tct, M>
     {
         /// Wrap a private scalar (see [`SigningKey::from_bytes`]).
         ///
@@ -1682,7 +1770,7 @@ pub mod dangerous {
         /// Sign into `out_r` / `out_s` (see [`SigningKey::sign_prehashed`]).
         #[must_use]
         pub fn sign_prehashed(&self, digest: &[u8], out_r: &mut [u8], out_s: &mut [u8]) -> bool {
-            self.key.sign_prehashed::<T, Tct, M>(digest, out_r, out_s)
+            self.key.sign_prehashed::<Tct, M>(digest, out_r, out_s)
         }
 
         /// Derive the SEC1 public key (see
