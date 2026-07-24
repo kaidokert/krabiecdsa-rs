@@ -5,6 +5,10 @@ ELF accounting, deadlines, baseline deltas, and reports. Run
 `cargo krabi-caliper run ecdsa-cortex-m0` (or the `m3`/`m4` campaign) in
 this directory; configuration lives in `krabi-caliper.toml`.
 
+The QEMU fixtures emit canonical `EM_MEASUREMENT` and `EM_STACK` records over
+semihosting. Stack painting, SysTick acquisition, and reporting use the shared
+`krabi-caliper` lifecycle adapter.
+
 The same case set runs on the J-Trace reference board through the declarative
 `probe-rs` profile. For a focused P-256 run:
 
