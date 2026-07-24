@@ -1091,7 +1091,12 @@ pub mod dangerous {
     /// candidate in `[1, n−1]`. `M` is the HMAC (e.g. `Hmac<Sha256>`);
     /// its hash MUST match the one that produced `digest`.
     ///
-    /// Variable-time (experimental — see the [module warning](self)).
+    /// Constant-time-ness follows the caller's `in_range` predicate; the
+    /// only secret-dependent branch is the rejection-loop count, RFC
+    /// 6979's inherent signal (experimental — see the [module warning](self)).
+    // Distinct symbol so the ct-verify taint gate can scope the
+    // rejection-loop-count declassification to this frame — see `add_rcb`.
+    #[inline(never)]
     fn rfc6979_nonce<C: Curve, T: ScalarBytes, M: digest::KeyInit + digest::Mac>(
         x_octets: &[u8],
         h1_octets: &[u8],
@@ -1229,6 +1234,9 @@ pub mod dangerous {
     ///
     /// Same experimental caveats as the rest of this module.
     #[must_use]
+    // Distinct symbol so the taint gate scopes the d-validity
+    // declassification to this frame — see `add_rcb`.
+    #[inline(never)]
     pub fn derive_nonce_rfc6979_ct<
         C: Curve,
         Tct: ConstantTimeInt,
@@ -1489,6 +1497,10 @@ pub mod dangerous {
 
     /// Affine x-coordinate `X/Z` (RCB projective), or `None` at the
     /// identity. Constant-time inversion via Fermat.
+    // Distinct symbol so the taint gate scopes the identity-check
+    // declassification (`None` → `r == 0` retry) to this frame — see
+    // `add_rcb`.
+    #[inline(never)]
     fn affine_x_ct<T: ConstantTimeInt>(f: &FieldCt<T>, pt: &PointCt<'_, T>) -> Option<T> {
         let zinv = Option::from(f.inv_fermat(&pt.z))?;
         Some(f.into_raw(&f.mul(&pt.x, &zinv)))
@@ -1504,6 +1516,10 @@ pub mod dangerous {
     ///
     /// Experimental — see the [module warning](self).
     #[must_use]
+    // Distinct symbol so the taint gate scopes the public pass/fail
+    // declassifications (key/nonce validity, `r`/`s == 0`) to this frame,
+    // keeping the fixture frame clean — see `add_rcb`.
+    #[inline(never)]
     pub fn sign_prehashed_ct_with_k<C: Curve, T: ConstantTimeInt>(
         private_key: &[u8],
         digest: &[u8],

@@ -1,54 +1,82 @@
 # Valgrind memcheck suppressions for ct-ctgrind — reviewed, not blanket.
 #
-# Load-bearing safety argument for every entry: each constant-time
-# primitive is a SEPARATE symbol in the binary. The `#[inline(never)]`
-# on `scalar_mul_ct` and `add_rcb`, plus the natural monomorphization
-# boundaries, keep the branchless ladder, RCB addition, and the affine
-# maps out of every frame named below — verified in the fixture archive:
+# Load-bearing safety argument for every entry: each function that holds
+# a declassified secret-dependent branch is a SEPARATE symbol
+# (`#[inline(never)]` in the crate), so its branch lands in its OWN named
+# frame — not the fixture, and never the same frame as the branchless
+# ladder. Verify in the fixture archive:
 #
-#     nm libct_fixtures.a | grep -E 'scalar_mul_ct|add_rcb|affine_x_ct'
+#     nm libct_fixtures.a | grep -E 'scalar_mul_ct|add_rcb|sign_prehashed_ct_with_k|rfc6979_nonce'
 #
-# So a real secret-dependent branch in the crypto path surfaces at its
-# OWN symbol and is matched by NO entry here. Every entry declassifies a
-# genuinely public signal or covers data-oblivious byte plumbing.
+# The branchless ladder (`scalar_mul_ct`, `add_rcb`) and the modmath CT
+# field ops carry NO suppression: a real secret-dependent branch there
+# surfaces at its own symbol and fails the gate. Only the frames below —
+# each doing a genuinely public decision — are declassified, and only for
+# `Cond` (a control-flow decision) and `Value` (a tainted value feeding
+# that decision). `Addr` errors — a secret-dependent memory *address*,
+# the cache/table-lookup attack surface — are NOT suppressed anywhere.
 #
 # ---------------------------------------------------------------------
 # (1) Public pass/fail outcomes of the sign (declassification).
 #
-# `sign_prehashed_ct_with_k` branches on: the secret key/nonce range
-# checks (`!d.ct_is_zero() & d.ct_lt(n)`, likewise `k`) and the `r == 0`
-# / `s == 0` degenerate-output retries. Each is a 1-bit PUBLIC outcome —
-# the function returns `false`, which the caller observes — so the branch
-# leaks nothing a timing attacker doesn't already learn from the return
-# value. The comparisons themselves are constant-time (`subtle`); only
-# the final accept/reject jump is declassified here. Cond only: a
-# secret-dependent memory ACCESS (Addr) in this frame still trips.
+# `sign_prehashed_ct_with_k` branches on the secret key/nonce range
+# checks and the `r == 0` / `s == 0` degenerate-output retries. Each is a
+# 1-bit PUBLIC outcome — the function returns `false`, which the caller
+# observes — so it leaks nothing a timing attacker doesn't already learn
+# from the return value. The comparisons are constant-time (`subtle`);
+# only the accept/reject decision is declassified. The secret math in
+# this frame is branchless modmath field ops (no `Cond` of their own).
 {
-   sign-public-passfail-outcome
+   sign-public-passfail-cond
    Memcheck:Cond
    fun:*sign_prehashed_ct_with_k*
 }
-# The Ct deriver's own key range check, same declassification.
 {
-   derive-key-validity-outcome
+   sign-public-passfail-value
+   Memcheck:Value8
+   fun:*sign_prehashed_ct_with_k*
+}
+# The Ct deriver's own secret-key range check, same declassification.
+{
+   derive-key-validity-cond
    Memcheck:Cond
    fun:*derive_nonce_rfc6979_ct*
+}
+{
+   derive-key-validity-value
+   Memcheck:Value8
+   fun:*derive_nonce_rfc6979_ct*
+}
+# The affine map's identity check (`None` -> `r == 0` retry), same class.
+{
+   affine-identity-cond
+   Memcheck:Cond
+   fun:*affine_x_ct*
+}
+{
+   affine-identity-value
+   Memcheck:Value8
+   fun:*affine_x_ct*
 }
 
 # ---------------------------------------------------------------------
 # (2) RFC 6979 rejection-loop count (declassification).
 #
 # `rfc6979_nonce` loops until a candidate lands in `[1, n)`; the loop-exit
-# branch depends on the (secret-derived) candidate. This is RFC 6979's
-# inherent, universally-accepted timing signal: reject probability ~2⁻³²
-# for these curves, so it is effectively always one iteration, and the
-# count reveals negligible information about the key. The candidate range
-# test is constant-time (`ct_lt`/`ct_is_zero`); only the loop-control jump
-# is declassified. The HMAC-DRBG this frame drives is data-oblivious
-# (SHA-2/HMAC branch on neither key nor message).
+# branch depends on the (secret-derived) candidate. RFC 6979's inherent,
+# universally-accepted timing signal: reject probability ~2^-32 for these
+# curves, effectively always one iteration, revealing negligible
+# information about the key. The candidate range test is constant-time
+# (`ct_lt`/`ct_is_zero`); only the loop-control decision is declassified.
+# The HMAC-DRBG this frame drives is data-oblivious.
 {
-   rfc6979-rejection-loop-count
+   rfc6979-rejection-loop-cond
    Memcheck:Cond
+   fun:*rfc6979_nonce*
+}
+{
+   rfc6979-rejection-loop-value
+   Memcheck:Value8
    fun:*rfc6979_nonce*
 }
 
@@ -60,9 +88,7 @@
 # copies regardless of value), but Valgrind's shadow propagation through
 # its word-at-a-time SIMD paths is imprecise and reports spurious errors
 # *inside* the routine. memcpy never branches on the data it copies; a
-# secret-dependent *address* would appear a frame above, not here. Scoped
-# to the direct callers so a memcpy inside any crypto primitive (all
-# separate symbols) stays fully checked.
+# secret-dependent *address* would appear a frame above, not here.
 {
    memcpy-tainted-from-sign-fixture-cond
    Memcheck:Cond
