@@ -1,0 +1,19 @@
+[package]
+name = "ct-ctgrind"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.87"
+publish = false
+description = "Valgrind taint-based CT verifier for krabiecdsa's RCB scalar-multiply sign path."
+
+[[bin]]
+name = "ct-ctgrind"
+path = "src/main.rs"
+
+[dependencies]
+# The fixtures as a Rust rlib so this binary can call each `extern "C"`
+# symbol directly. `default-features = false` drops the fixture crate's
+# own `#[panic_handler]` — this binary is std, and std provides one.
+ct-fixtures = { path = "../ct-fixtures", default-features = false }
+
+krabi-caliper = { version = "0.1", features = ["ctgrind"] }

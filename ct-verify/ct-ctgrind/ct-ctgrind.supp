@@ -1,0 +1,55 @@
+# Valgrind memcheck suppressions for ct-ctgrind — reviewed, not blanket.
+#
+# Load-bearing safety argument for every entry: each constant-time
+# primitive is a SEPARATE symbol in the binary — `scalar_mul_ct` (the
+# branchless double-and-add-always ladder), `add_rcb` (RCB complete
+# addition), and the modmath/fixed-bigint CIOS-Ct + `inv` primitives it
+# calls. The `ct-verify` ladder gate confirms `scalar_mul_ct` and
+# `add_rcb` survive LTO as distinct symbols on every embedded ISA, and
+# they are NOT inlined into the sign fixture. So a real secret-dependent
+# branch in the crypto path surfaces at one of those symbols and is not
+# matched by any fixture-scoped entry below. These only cover
+# byte-plumbing glue in the fixture's own frame.
+#
+# Unlike the RSA harness, ECDSA output is fixed-width P1363 (`r||s`,
+# `ELEM_BYTES` each, no leading-zero trim), so there is no
+# public-by-design variable-time serialization to declassify — only the
+# secret-byte parse below.
+#
+# ---------------------------------------------------------------------
+# memcpy / memmove of tainted bytes.
+#
+# The fixture parses the secret scalars `d` and `k` from byte slices
+# (`from_be`), calling memcpy/memmove on tainted memory. glibc's memcpy
+# is data-oblivious (it copies bytes regardless of value), but Valgrind's
+# shadow-value propagation through its word-at-a-time SIMD paths is
+# imprecise and reports spurious errors *inside* the memcpy routine. Safe
+# to suppress: memcpy never branches on the data it copies. A
+# secret-dependent *address* would appear in the caller's address
+# computation, a frame above — not matched here. Scoped to the sign
+# fixtures as the direct caller, so a memcpy in any crypto primitive (all
+# separate symbols) stays fully checked.
+{
+   memcpy-tainted-scalar-parse-from-sign-fixture-cond
+   Memcheck:Cond
+   fun:*memcpy*
+   fun:ct_fix__ecdsa_sign_withk_*
+}
+{
+   memcpy-tainted-scalar-parse-from-sign-fixture-value
+   Memcheck:Value8
+   fun:*memcpy*
+   fun:ct_fix__ecdsa_sign_withk_*
+}
+{
+   memmove-tainted-scalar-parse-from-sign-fixture-cond
+   Memcheck:Cond
+   fun:*memmove*
+   fun:ct_fix__ecdsa_sign_withk_*
+}
+{
+   memmove-tainted-scalar-parse-from-sign-fixture-value
+   Memcheck:Value8
+   fun:*memmove*
+   fun:ct_fix__ecdsa_sign_withk_*
+}

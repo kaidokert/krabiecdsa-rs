@@ -1,0 +1,28 @@
+[package]
+name = "panic-free-audit"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.87"
+publish = false
+description = "Linker-DCE audit: confirm krabiecdsa's CT sign path synthesizes no panic symbols."
+
+[lib]
+# staticlib so a cross-target build produces a `.a` that llvm-nm can read
+# without a linker script or runtime. Same shape as ct-fixtures.
+crate-type = ["staticlib"]
+
+[features]
+default = []
+# no_std + local #[panic_handler] for the cross-built audit shape
+# (enabled by the shared panic-audit command). Host clippy links std.
+panic-handler = []
+# Deliberately-panicky fixtures the panic-audit self-test builds in a
+# second archive to prove the gate still catches a synthesized panic.
+neg-controls = []
+
+[dependencies]
+krabiecdsa = { path = "../../ecdsa", default-features = false, features = ["experimental-signing"] }
+fixed-bigint = { version = "0.6.0", default-features = false, features = ["cios", "zeroize"] }
+
+# Workspace [profile.release] (lto=fat, codegen-units=1, opt-level=z,
+# panic=abort) is what makes DCE worth measuring; do not override here.
