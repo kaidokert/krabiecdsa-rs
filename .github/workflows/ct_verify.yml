@@ -138,13 +138,18 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cargo/bin/cargo-krabi-caliper
-          key: ct-verify-ctgrind-${{ env.CALIPER_TAG }}-${{ matrix.runs-on }}-${{ hashFiles('ct-verify/**/Cargo.toml', 'ecdsa/Cargo.toml') }}
-          restore-keys: ct-verify-ctgrind-${{ env.CALIPER_TAG }}-${{ matrix.runs-on }}-
+          key: ct-verify-ctgrind-ctg-${{ env.CALIPER_TAG }}-${{ matrix.runs-on }}-${{ hashFiles('ct-verify/**/Cargo.toml', 'ecdsa/Cargo.toml') }}
+          restore-keys: ct-verify-ctgrind-ctg-${{ env.CALIPER_TAG }}-${{ matrix.runs-on }}-
+      # The `ctgrind` subcommand is gated behind the caliper `ctgrind`
+      # feature (pulls crabgrind — needs the Valgrind headers installed
+      # above), so it must be in the CLI's feature set here. The `-ctg`
+      # cache key keeps this ctgrind-featured binary separate from the
+      # `cli,campaign`-only one the panic-audit job builds.
       - name: Install krabi-caliper CLI
         run: |
           if ! command -v cargo-krabi-caliper &> /dev/null; then
             cargo install --git https://github.com/kaidokert/krabi-caliper-rs \
-              --tag "$CALIPER_TAG" --features cli,campaign --locked krabi-caliper
+              --tag "$CALIPER_TAG" --features cli,campaign,ctgrind --locked krabi-caliper
           fi
       - name: Taint gate
         working-directory: ct-verify
