@@ -77,6 +77,48 @@ taint_sign_fixture!(
     ct_fixtures::DIGEST384
 );
 
+// Full RFC 6979 deterministic sign — taints `d` only; the nonce is
+// derived internally by the now-constant-time RFC 6979 DRBG. This taints
+// the secret key through the *whole* deterministic sign, not just the
+// scalar multiply. The digest is public; `r`/`s` are untainted before
+// `black_box` (secret-derived but published).
+macro_rules! taint_det_fixture {
+    ($name:ident, $bytes:literal, $d:expr, $digest:expr) => {
+        unsafe extern "C" {
+            fn $name(
+                d_ptr: *const [u8; $bytes],
+                digest_ptr: *const [u8; $bytes],
+                r_ptr: *mut [u8; $bytes],
+                s_ptr: *mut [u8; $bytes],
+            );
+        }
+        ctgrind_fixture!($name, {
+            let d = $d;
+            let digest = $digest;
+            let mut r = [0u8; $bytes];
+            let mut s = [0u8; $bytes];
+            taint_val(&d);
+            unsafe { $name(&d, &digest, &mut r, &mut s) }
+            untaint_val(&r);
+            untaint_val(&s);
+            let _ = black_box((r, s));
+        });
+    };
+}
+
+taint_det_fixture!(
+    ct_fix__ecdsa_sign_det_p256__fb32,
+    32,
+    ct_fixtures::D256,
+    ct_fixtures::DIGEST256
+);
+taint_det_fixture!(
+    ct_fix__ecdsa_sign_det_p384__fb32,
+    48,
+    ct_fixtures::D384,
+    ct_fixtures::DIGEST384
+);
+
 // Negative controls in the fixture crate's own ABI shape (data-dependent
 // branch + early-exit compare on tainted bytes). Both MUST trip.
 unsafe extern "C" {

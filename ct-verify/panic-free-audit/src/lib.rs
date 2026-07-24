@@ -23,6 +23,13 @@ use krabiecdsa::dangerous::sign_prehashed_ct_with_k;
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
 
+#[cfg(feature = "deterministic")]
+use hmac::Hmac;
+#[cfg(feature = "deterministic")]
+use krabiecdsa::dangerous::sign_prehashed_ct;
+#[cfg(feature = "deterministic")]
+use sha2::{Sha256, Sha384};
+
 const fn nib(c: u8) -> u8 {
     match c {
         b'0'..=b'9' => c - b'0',
@@ -81,6 +88,38 @@ panic_audit_fixture!(panic_audit__ecdsa_sign_withk_p256__fb32, P256, FixedUInt<u
 panic_audit_fixture!(panic_audit__ecdsa_sign_withk_p256__fb8, P256, FixedUInt<u8, 32, Ct>, 32, D256, K256, DIGEST256);
 panic_audit_fixture!(panic_audit__ecdsa_sign_withk_p256__fb64, P256, FixedUInt<u64, 4, Ct>, 32, D256, K256, DIGEST256);
 panic_audit_fixture!(panic_audit__ecdsa_sign_withk_p384__fb32, P384, FixedUInt<u32, 12, Ct>, 48, D384, K384, DIGEST384);
+
+// Full RFC 6979 deterministic sign (nonce derivation + sign), now that
+// the derivation is constant-time. Pulls the HMAC-DRBG (`hmac`/`sha2`)
+// into the audited archive — krabiecdsa's own derivation byte-plumbing
+// is panic-free (audited crate-scoped); the upstream `hmac`/`sha2`
+// block buffering carries its own panic branches, out of scope here.
+#[cfg(feature = "deterministic")]
+macro_rules! panic_audit_det_fixture {
+    ($name:ident, $curve:ty, $carrier:ty, $mac:ty, $bytes:literal, $d:expr, $digest:expr) => {
+        /// # Safety
+        /// `out_ptr` must be a valid pointer to a writable byte.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(out_ptr: *mut u8) {
+            let d = black_box($d);
+            let digest = black_box($digest);
+            let mut r = [0u8; $bytes];
+            let mut s = [0u8; $bytes];
+            let ok =
+                sign_prehashed_ct::<$curve, $carrier, $mac>(&d[..], &digest[..], &mut r, &mut s);
+            black_box(&r);
+            black_box(&s);
+            unsafe { *out_ptr = black_box(ok as u8) }
+        }
+    };
+}
+
+#[cfg(feature = "deterministic")]
+panic_audit_det_fixture!(panic_audit__ecdsa_sign_det_p256__fb32, P256, FixedUInt<u32, 8, Ct>, Hmac<Sha256>, 32, D256, DIGEST256);
+#[cfg(feature = "deterministic")]
+panic_audit_det_fixture!(panic_audit__ecdsa_sign_det_p256__fb8, P256, FixedUInt<u8, 32, Ct>, Hmac<Sha256>, 32, D256, DIGEST256);
+#[cfg(feature = "deterministic")]
+panic_audit_det_fixture!(panic_audit__ecdsa_sign_det_p384__fb32, P384, FixedUInt<u32, 12, Ct>, Hmac<Sha384>, 48, D384, DIGEST384);
 
 #[cfg(feature = "panic-handler")]
 #[panic_handler]

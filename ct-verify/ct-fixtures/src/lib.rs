@@ -143,6 +143,54 @@ ct_sign_fixture!(ct_fix__ecdsa_sign_withk_p256__fb64, P256, FixedUInt<u64, 4, Ct
 // P-384, `u32` limbs — the deployment shape at the wider field.
 ct_sign_fixture!(ct_fix__ecdsa_sign_withk_p384__fb32, P384, FixedUInt<u32, 12, Ct>, 48);
 
+// --- full RFC 6979 deterministic sign ---------------------------------
+//
+// Nonce derivation (now constant-time) + the RCB sign, driven by the
+// secret `d` alone — the taint harness marks only `d` undefined and the
+// nonce is derived internally. The digest is public. This is the whole
+// deterministic sign the ladder + taint gates attest end to end (up to
+// RFC 6979's inherent rejection-loop count).
+
+#[cfg(feature = "deterministic")]
+macro_rules! ct_sign_det_fixture {
+    ($name:ident, $curve:ty, $carrier:ty, $mac:ty, $bytes:literal) => {
+        /// Whole deterministic sign driven by the secret `d`; the digest
+        /// is public and the nonce is derived internally.
+        ///
+        /// # Safety
+        /// All pointers must be valid, aligned pointers to `$bytes`-byte
+        /// arrays (`digest`/`r`/`s` writable where applicable).
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(
+            d_ptr: *const [u8; $bytes],
+            digest_ptr: *const [u8; $bytes],
+            r_ptr: *mut [u8; $bytes],
+            s_ptr: *mut [u8; $bytes],
+        ) {
+            let d = black_box(unsafe { *d_ptr });
+            let digest = unsafe { *digest_ptr };
+            let mut r = [0u8; $bytes];
+            let mut s = [0u8; $bytes];
+            let ok = krabiecdsa::dangerous::sign_prehashed_ct::<$curve, $carrier, $mac>(
+                black_box(&d[..]),
+                &digest[..],
+                &mut r,
+                &mut s,
+            );
+            unsafe {
+                *r_ptr = black_box(r);
+                *s_ptr = black_box(s);
+            }
+            let _ = black_box(ok);
+        }
+    };
+}
+
+#[cfg(feature = "deterministic")]
+ct_sign_det_fixture!(ct_fix__ecdsa_sign_det_p256__fb32, P256, FixedUInt<u32, 8, Ct>, hmac::Hmac<sha2::Sha256>, 32);
+#[cfg(feature = "deterministic")]
+ct_sign_det_fixture!(ct_fix__ecdsa_sign_det_p384__fb32, P384, FixedUInt<u32, 12, Ct>, hmac::Hmac<sha2::Sha384>, 48);
+
 // --- negative controls ------------------------------------------------
 //
 // Same `extern "C"` + `black_box` shape as the positives, so a passing

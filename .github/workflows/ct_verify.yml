@@ -86,12 +86,26 @@ jobs:
             cargo install --git https://github.com/kaidokert/krabi-caliper-rs \
               --tag "$CALIPER_TAG" --features cli,campaign --locked krabi-caliper
           fi
-      - name: Panic-free audit
+      # With-nonce sign — strict: the whole path incl. every dependency
+      # must be panic-free.
+      - name: Panic-free audit (with-nonce, strict)
         working-directory: ct-verify
         run: |
           cargo krabi-caliper panic-audit --workspace . --package panic-free-audit \
             --target ${{ matrix.target }} --features panic-handler \
             --negative-features neg-controls --owned-symbol '.*' \
+            --expect-negative panic_audit__neg__bounds_check \
+            --expect-negative panic_audit__neg__unwrap \
+            --expect-negative panic_audit__neg__expect
+      # Deterministic sign — crate-owned scope (the RFC 6979 DRBG's
+      # upstream hmac/sha2 block buffering is out of scope; see README).
+      - name: Panic-free audit (deterministic, crate-owned)
+        working-directory: ct-verify
+        run: |
+          cargo krabi-caliper panic-audit --workspace . --package panic-free-audit \
+            --target ${{ matrix.target }} --features panic-handler \
+            --cargo-arg=--features=deterministic \
+            --negative-features neg-controls --owned-symbol 'krabiecdsa|panic_audit__' \
             --expect-negative panic_audit__neg__bounds_check \
             --expect-negative panic_audit__neg__unwrap \
             --expect-negative panic_audit__neg__expect
