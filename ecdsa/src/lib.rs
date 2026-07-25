@@ -1052,17 +1052,12 @@ pub mod dangerous {
     const MAX_HLEN: usize = 64;
     const MAX_QLEN_BYTES: usize = 66;
 
-    /// Copy `src` into the front of `dst`, panic-free. The destination
-    /// sub-slice is sized *from* `src.len()`, so the `copy_from_slice`
-    /// lengths match by construction and the optimizer drops both the
-    /// range-check and the length-mismatch panic branches — the RFC 6979
-    /// DRBG slices on a runtime `hlen` the optimizer can't otherwise
-    /// prove in-bounds. `None` if `dst` is too short.
+    /// Copy `src` into the front of `dst`, panic-free; `None` if `dst` is
+    /// too short. A byte loop, not `copy_from_slice`: the latter's
+    /// `self.len() == src.len()` assert isn't reliably elided when `dst`
+    /// is sliced on a runtime `hlen`, leaving a reachable `len_mismatch`
+    /// panic in the DRBG. `zip` needs no such proof.
     fn copy_prefix(dst: &mut [u8], src: &[u8]) -> Option<()> {
-        // Byte loop rather than `copy_from_slice`: the latter's internal
-        // `self.len() == src.len()` assert is not always elided even
-        // when the destination is `get_mut(..src.len())`, leaving a
-        // reachable `len_mismatch` panic. `zip` needs no such proof.
         let d = dst.get_mut(..src.len())?;
         for (di, si) in d.iter_mut().zip(src.iter()) {
             *di = *si;
@@ -1102,13 +1097,10 @@ pub mod dangerous {
         h1_octets: &[u8],
         n: &T,
         qlen: usize,
-        // Candidate acceptance test `1 <= cand < n`. The caller supplies
-        // it so the same HMAC-DRBG loop serves the vartime and the
-        // constant-time derivations without drift — the Nct caller passes
-        // a `<`-based test, the Ct caller a `ct_lt`/`ct_is_zero` one. The
-        // number of loop iterations (reject probability ~2⁻³²) is the
-        // one timing signal inherent to RFC 6979; the *comparison* is
-        // what the Ct caller keeps constant-time.
+        // Candidate acceptance test `1 <= cand < n`, supplied by the
+        // caller so one HMAC-DRBG loop serves both derivations without
+        // drift — the Nct caller passes a `<`-based test, the Ct caller a
+        // `ct_lt`/`ct_is_zero` one it keeps constant-time.
         in_range: impl Fn(&T, &T) -> bool,
     ) -> Option<T> {
         let hlen = <M as digest::OutputSizeUser>::output_size();

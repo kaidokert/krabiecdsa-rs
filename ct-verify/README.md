@@ -118,7 +118,7 @@ cargo krabi-caliper panic-audit --workspace . --package panic-free-audit \
   --expect-negative panic_audit__neg__expect
 ```
 
-## Honest gaps
+## Known gaps
 
 - **The RFC 6979 DRBG's upstream deps are out of the panic-free scope.**
   The deterministic sign pulls in RustCrypto `hmac`/`sha2`, whose block
@@ -127,8 +127,8 @@ cargo krabi-caliper panic-audit --workspace . --package panic-free-audit \
   (the deterministic leg audits crate-owned symbols and passes); the
   upstream branches are deferred, not fixed here — the same
   upstream-triage stance the with-nonce leg's strict `.*` audit applies
-  to fixed-bigint/modmath. RSA's harness sidesteps this by keeping `sha2`
-  out via prehash; RFC 6979 can't, the HMAC *is* the DRBG.
+  to fixed-bigint/modmath. RFC 6979 can't avoid `sha2` — the HMAC *is*
+  the DRBG.
 - **Branchless selects on secrets are invisible to taint.** memcheck
   flags conditional *jumps* and addresses, not `csel`/`cmov` data flow.
   The ladder gate partially compensates by counting every conditional

@@ -8,8 +8,9 @@
 //! signer a reachable panic is both a DoS edge and a timing oracle (the
 //! panic-formatting path's cost depends on the values being formatted).
 //!
-//! Scope matches the taint/asm gates: `sign_prehashed_ct_with_k`, not
-//! the still-`Nct` RFC 6979 nonce derivation.
+//! Scope matches the taint/asm gates: `sign_prehashed_ct_with_k` by
+//! default, and the whole `sign_prehashed_ct` under the `deterministic`
+//! feature.
 
 #![cfg_attr(feature = "panic-handler", no_std)]
 
@@ -89,11 +90,11 @@ panic_audit_fixture!(panic_audit__ecdsa_sign_withk_p256__fb8, P256, FixedUInt<u8
 panic_audit_fixture!(panic_audit__ecdsa_sign_withk_p256__fb64, P256, FixedUInt<u64, 4, Ct>, 32, D256, K256, DIGEST256);
 panic_audit_fixture!(panic_audit__ecdsa_sign_withk_p384__fb32, P384, FixedUInt<u32, 12, Ct>, 48, D384, K384, DIGEST384);
 
-// Full RFC 6979 deterministic sign (nonce derivation + sign), now that
-// the derivation is constant-time. Pulls the HMAC-DRBG (`hmac`/`sha2`)
-// into the audited archive — krabiecdsa's own derivation byte-plumbing
-// is panic-free (audited crate-scoped); the upstream `hmac`/`sha2`
-// block buffering carries its own panic branches, out of scope here.
+// Full RFC 6979 deterministic sign (nonce derivation + sign). Pulls the
+// HMAC-DRBG (`hmac`/`sha2`) into the audited archive — krabiecdsa's own
+// derivation byte-plumbing is panic-free (audited crate-scoped); the
+// upstream `hmac`/`sha2` block buffering carries its own panic branches,
+// out of scope here.
 #[cfg(feature = "deterministic")]
 macro_rules! panic_audit_det_fixture {
     ($name:ident, $curve:ty, $carrier:ty, $mac:ty, $bytes:literal, $d:expr, $digest:expr) => {

@@ -78,9 +78,9 @@ taint_sign_fixture!(
 );
 
 // Full RFC 6979 deterministic sign — taints `d` only; the nonce is
-// derived internally by the now-constant-time RFC 6979 DRBG. This taints
-// the secret key through the *whole* deterministic sign, not just the
-// scalar multiply. The digest is public; `r`/`s` are untainted before
+// derived internally by the constant-time RFC 6979 DRBG. This taints the
+// secret key through the *whole* deterministic sign, not just the scalar
+// multiply. The digest is public; `r`/`s` are untainted before
 // `black_box` (secret-derived but published).
 macro_rules! taint_det_fixture {
     ($name:ident, $bytes:literal, $d:expr, $digest:expr) => {

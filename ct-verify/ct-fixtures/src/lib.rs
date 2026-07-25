@@ -13,17 +13,15 @@
 //! [`core::hint::black_box`], or fat-LTO `opt-level="z"` folds the body
 //! into an ABI stub and the inspection passes vacuously.
 //!
-//! # Scope boundary — why `_with_k`, not `sign_prehashed_ct`
+//! # What the fixtures cover
 //!
-//! The gates attest the **RCB scalar-multiply sign** given a nonce
-//! (`sign_prehashed_ct_with_k`): CT range checks, the branchless
-//! double-and-add-always ladder, and `k⁻¹`. They deliberately do **not**
-//! drive `sign_prehashed_ct`, whose RFC 6979 nonce derivation still runs
-//! on the variable-time (`Nct`) backend — tainting `d` through that path
-//! would (correctly) trip the taint gate on the HMAC-DRBG. Closing that
-//! last gap is a prerequisite to attesting the full deterministic sign;
-//! until then the nonce `k` is a tainted *input* here, exactly as if a
-//! CT deriver had produced it.
+//! `ct_fix__ecdsa_sign_withk_*` drive the **RCB scalar-multiply sign**
+//! given a nonce (`sign_prehashed_ct_with_k`): CT range checks, the
+//! branchless double-and-add-always ladder, and `k⁻¹`. The
+//! `deterministic`-gated `ct_fix__ecdsa_sign_det_*` extend coverage to
+//! the whole `sign_prehashed_ct` — the nonce derivation is constant-time
+//! too, so tainting `d` through the RFC 6979 HMAC-DRBG stays clean (the
+//! rejection-loop count is a declassified, public signal).
 //!
 //! Naming contract the gates key off:
 //! - `ct_fix__<op>__<carrier>` — a positive; its emitted code must be
@@ -145,9 +143,9 @@ ct_sign_fixture!(ct_fix__ecdsa_sign_withk_p384__fb32, P384, FixedUInt<u32, 12, C
 
 // --- full RFC 6979 deterministic sign ---------------------------------
 //
-// Nonce derivation (now constant-time) + the RCB sign, driven by the
-// secret `d` alone — the taint harness marks only `d` undefined and the
-// nonce is derived internally. The digest is public. This is the whole
+// Constant-time nonce derivation + the RCB sign, driven by the secret
+// `d` alone — the taint harness marks only `d` undefined and the nonce
+// is derived internally. The digest is public. This is the whole
 // deterministic sign the ladder + taint gates attest end to end (up to
 // RFC 6979's inherent rejection-loop count).
 
