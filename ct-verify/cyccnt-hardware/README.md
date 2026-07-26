@@ -77,17 +77,17 @@ cargo run --release --no-default-features --features carrier-u8x32,clock-168mhz,
 
 ## Results
 
-Pending the first post-constant-time-derivation bench run — each campaign writes
-an `EM_SUMMARY` per chunk to `target/krabi-caliper/…` on the bench. The expected
-outcome: at 30 MHz every u32x8 positive — including `rfc6979_nonce` — holds
-constant across keys while `negative_early_exit` separates; the 168 MHz u8x32
-smoke confirms it signs and captures rough timing (jitter is expected there, so
-it isn't gated). The numbers here will be filled in once a run's retained output
-substantiates it. (The earlier 168 MHz run that recorded
-`rfc6979_nonce`/`signing_key_rfc6979` as FAIL predates the CT derivation; it no
-longer applies.) Both tiers are report-only (`gate = false`) for the first
-baseline; flip the **30 MHz CT gate** to `gate = true` (matching ed25519/RSA)
-once a run confirms all-pass — the 168 MHz smoke stays `gate = false` by design.
+Each campaign writes an `EM_SUMMARY` per chunk to `target/krabi-caliper/…` on
+the bench. The 30 MHz baseline run confirmed the CT tier: every u32x8 positive —
+`rfc6979_nonce`, `ct_sign_fixed_nonce`, `signing_key_rfc6979`, `verifying_key` —
+holds constant across keys (Welch `|t|` well below the 4.5 threshold) while
+`negative_early_exit` separates deterministically. On that baseline the **30 MHz
+CT tier is gated** (`gate = true`, matching ed25519/RSA): a protected-class
+timing regression now fails CI. The 168 MHz u8x32 smoke stays `gate = false` by
+design — it confirms the byte-limb carrier signs on hardware and captures rough
+timing, but its wait-state fetch jitter (positives can exceed the threshold
+there) makes it unsuitable as a gate; u8x32's constant-time property is proven at
+the instruction level by ctgrind + the asm-ladder audit.
 
 CYCCNT is timing-regression evidence, not proof of identical instruction or
 memory traces — it complements, and does not replace, the ctgrind taint gate
