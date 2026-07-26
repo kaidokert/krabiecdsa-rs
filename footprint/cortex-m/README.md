@@ -5,6 +5,29 @@ ELF accounting, deadlines, baseline deltas, and reports. Run
 `cargo krabi-caliper run ecdsa-cortex-m0` (or the `m3`/`m4` campaign) in
 this directory; configuration lives in `krabi-caliper.toml`.
 
-The fixtures emit canonical `EM_MEASUREMENT` and `EM_STACK` records over
+The QEMU fixtures emit canonical `EM_MEASUREMENT` and `EM_STACK` records over
 semihosting. Stack painting, SysTick acquisition, and reporting use the shared
 `krabi-caliper` lifecycle adapter.
+
+The same case set runs on the J-Trace reference board through the declarative
+`probe-rs` profile. For a focused P-256 run:
+
+```sh
+cargo krabi-caliper run ecdsa-jtrace-f407 \
+  --case baseline --case p256-u32
+```
+
+The equivalent direct command remains useful when diagnosing probe failures:
+
+```sh
+cargo build --release --target thumbv7em-none-eabihf \
+  --example ecdsa_verify --features jtrace-f407,curve_p256,limb_u32
+probe-rs run --chip STM32F407VGTx --protocol swd \
+  --probe 1366:1020:001224000224 \
+  target/thumbv7em-none-eabihf/release/examples/ecdsa_verify
+```
+
+Hardware evidence uses canonical `EM_MEASUREMENT` records with `systick` and
+`dwt` counter names, plus a versioned `EM_STACK` record. DWT measurements must
+be shorter than 2^32 core cycles. Stack painting, counter acquisition, and
+reporting use the same `krabi-caliper` lifecycle adapter as the QEMU fixtures.

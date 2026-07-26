@@ -10,8 +10,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # krabi-caliper CLI + patch pin — one source of truth for the gates.
-  CALIPER_TAG: v0.1.0-alpha.4
+  # krabi-caliper CLI version (published on crates.io) — one source of
+  # truth for the gates.
+  CALIPER_VERSION: "0.1.2"
 
 jobs:
   # Assembly-ladder branch-freedom gate: cross-build the fixture
@@ -78,13 +79,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cargo/bin/cargo-krabi-caliper
-          key: ct-verify-audit-${{ env.CALIPER_TAG }}-${{ hashFiles('ct-verify/**/Cargo.toml', 'ecdsa/Cargo.toml') }}
-          restore-keys: ct-verify-audit-${{ env.CALIPER_TAG }}-
+          key: ct-verify-audit-${{ env.CALIPER_VERSION }}-${{ hashFiles('ct-verify/**/Cargo.toml', 'ecdsa/Cargo.toml') }}
+          restore-keys: ct-verify-audit-${{ env.CALIPER_VERSION }}-
       - name: Install krabi-caliper CLI
         run: |
           if ! command -v cargo-krabi-caliper &> /dev/null; then
-            cargo install --git https://github.com/kaidokert/krabi-caliper-rs \
-              --tag "$CALIPER_TAG" --features cli,campaign --locked krabi-caliper
+            cargo install krabi-caliper --version "$CALIPER_VERSION" \
+              --features cli,campaign --locked
           fi
       # With-nonce sign — strict: the whole path incl. every dependency
       # must be panic-free.
@@ -138,8 +139,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cargo/bin/cargo-krabi-caliper
-          key: ct-verify-ctgrind-ctg-${{ env.CALIPER_TAG }}-${{ matrix.runs-on }}-${{ hashFiles('ct-verify/**/Cargo.toml', 'ecdsa/Cargo.toml') }}
-          restore-keys: ct-verify-ctgrind-ctg-${{ env.CALIPER_TAG }}-${{ matrix.runs-on }}-
+          key: ct-verify-ctgrind-ctg-${{ env.CALIPER_VERSION }}-${{ matrix.runs-on }}-${{ hashFiles('ct-verify/**/Cargo.toml', 'ecdsa/Cargo.toml') }}
+          restore-keys: ct-verify-ctgrind-ctg-${{ env.CALIPER_VERSION }}-${{ matrix.runs-on }}-
       # The `ctgrind` subcommand is gated behind the caliper `ctgrind`
       # feature (pulls crabgrind — needs the Valgrind headers installed
       # above), so it must be in the CLI's feature set here. The `-ctg`
@@ -148,8 +149,8 @@ jobs:
       - name: Install krabi-caliper CLI
         run: |
           if ! command -v cargo-krabi-caliper &> /dev/null; then
-            cargo install --git https://github.com/kaidokert/krabi-caliper-rs \
-              --tag "$CALIPER_TAG" --features cli,campaign,ctgrind --locked krabi-caliper
+            cargo install krabi-caliper --version "$CALIPER_VERSION" \
+              --features cli,campaign,ctgrind --locked
           fi
       - name: Taint gate
         working-directory: ct-verify

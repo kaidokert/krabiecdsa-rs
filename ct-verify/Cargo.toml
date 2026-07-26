@@ -10,7 +10,11 @@ members = [
     "ct-driver",
     "ct-ctgrind",
     "panic-free-audit",
+    "cyccnt-hardware",
 ]
+# `cyccnt-hardware` is an embedded (Cortex-M) binary — kept out of
+# `default-members` so a host `cargo build`/`test` targets only the
+# host-buildable crates.
 default-members = ["ct-fixtures", "ct-driver", "ct-ctgrind", "panic-free-audit"]
 
 # Deterministic codegen: the asm-grep / taint layers must inspect the
@@ -24,6 +28,3 @@ codegen-units = 1
 opt-level = "z"
 panic = "abort"
 incremental = false
-
-[patch.crates-io]
-krabi-caliper = { git = "https://github.com/kaidokert/krabi-caliper-rs", tag = "v0.1.0-alpha.4" }
