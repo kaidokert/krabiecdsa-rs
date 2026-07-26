@@ -1253,9 +1253,6 @@ pub mod dangerous {
     ///
     /// Same experimental caveats as the rest of this module.
     #[must_use]
-    // Distinct symbol so the taint gate scopes the d-validity
-    // declassification to this frame — see `add_rcb`.
-    #[inline(never)]
     pub fn derive_nonce_rfc6979_ct<
         C: Curve,
         Tct: ConstantTimeInt,
@@ -1276,11 +1273,12 @@ pub mod dangerous {
             return false;
         }
         let n = from_be::<Tct>(C::N);
-        // d is secret — validate it in constant time.
         let d = from_be::<Tct>(private_key);
-        if !bool::from(!d.ct_is_zero() & d.ct_lt(&n)) {
-            return false;
-        }
+        // d is secret — its validity folds into the returned `Choice`
+        // rather than an early branch, so this frame stays branch-free
+        // (nothing suppressed). The derivation below runs regardless; on
+        // an invalid `d` the caller sees `false` and ignores `out_k`.
+        let d_valid = !d.ct_is_zero() & d.ct_lt(&n);
         // `n` is `Copy` (ConstantTimeInt: Copy), so building the field
         // leaves the local `n` live for the range predicate below.
         let Some(fn_) = FieldCt::new(n) else {
@@ -1310,7 +1308,7 @@ pub mod dangerous {
         };
         to_be_ct::<Tct>(&k, out_k);
         k.zeroize();
-        true
+        bool::from(d_valid)
     }
 
     /// Sign `digest` under `private_key` with an **RFC 6979
@@ -1514,15 +1512,28 @@ pub mod dangerous {
         r
     }
 
-    /// Affine x-coordinate `X/Z` (RCB projective), or `None` at the
-    /// identity. Constant-time inversion via Fermat.
-    // Distinct symbol so the taint gate scopes the identity-check
-    // declassification (`None` → `r == 0` retry) to this frame — see
-    // `add_rcb`.
-    #[inline(never)]
-    fn affine_x_ct<T: ConstantTimeInt>(f: &FieldCt<T>, pt: &PointCt<'_, T>) -> Option<T> {
-        let zinv = Option::from(f.inv_fermat(&pt.z))?;
-        Some(f.into_raw(&f.mul(&pt.x, &zinv)))
+    /// Affine x-coordinate `X/Z` (RCB projective) and whether the point
+    /// is non-identity, as `(x, valid)`. Branch-free: `Z⁻¹` is a
+    /// `CtOption` whose `is_some` becomes `valid`, and the `unwrap_or`
+    /// default keeps the multiply running even at the identity (where `x`
+    /// is meaningless and `valid` is false). The caller folds `valid`
+    /// into its accumulated `Choice` rather than branching here.
+    /// The Fermat inversion exponent `m − 2` (so `a⁻¹ ≡ a^(m−2) mod m`
+    /// for prime `m`). The field's `exp` is branch-free and always
+    /// defined — it yields 0 at `a = 0` — so it replaces the
+    /// `CtOption`-returning `inv_fermat` on the branch-free sign path,
+    /// where the `a = 0` case is folded into a validity `Choice` instead.
+    fn fermat_exp<T: ConstantTimeInt>(modulus: &T) -> T {
+        (*modulus).wrapping_sub(T::one().wrapping_add(T::one()))
+    }
+
+    fn affine_x_ct<T: ConstantTimeInt>(f: &FieldCt<T>, pt: &PointCt<'_, T>) -> (T, subtle::Choice) {
+        // `valid` is false at the identity (`Z = 0`); the caller folds it
+        // into its accumulated `Choice` rather than branching here.
+        let valid = !f.into_raw(&pt.z).ct_is_zero();
+        let zinv = f.exp(&pt.z, &fermat_exp(f.modulus()));
+        let x = f.into_raw(&f.mul(&pt.x, &zinv));
+        (x, valid)
     }
 
     /// **Constant-time** ECDSA signing over curve `C` with the Ct
@@ -1535,10 +1546,6 @@ pub mod dangerous {
     ///
     /// Experimental — see the [module warning](self).
     #[must_use]
-    // Distinct symbol so the taint gate scopes the public pass/fail
-    // declassifications (key/nonce validity, `r`/`s == 0`) to this frame,
-    // keeping the fixture frame clean — see `add_rcb`.
-    #[inline(never)]
     pub fn sign_prehashed_ct_with_k<C: Curve, T: ConstantTimeInt>(
         private_key: &[u8],
         digest: &[u8],
@@ -1572,17 +1579,17 @@ pub mod dangerous {
         }
         let p = from_be::<T>(C::P);
         let n = from_be::<T>(C::N);
-        let zero = T::zero();
-
         let d = from_be::<T>(private_key);
         let k_int = from_be::<T>(k);
-        // d and k are secret — validate them in constant time (the
-        // public r/s zero-checks below stay ordinary `==`).
-        let d_ok = !d.ct_is_zero() & d.ct_lt(&n);
-        let k_ok = !k_int.ct_is_zero() & k_int.ct_lt(&n);
-        if !bool::from(d_ok & k_ok) {
-            return false;
-        }
+
+        // Every secret-derived validity test folds into one `Choice`,
+        // returned once at the end — no secret-dependent early return, so
+        // the taint gate checks this whole frame with nothing suppressed.
+        // The key/nonce range, `r`/`s == 0`, the RCB identity, and
+        // `k⁻¹`-exists are all public-by-design outcomes (the signer
+        // returns `false`), but declassifying them branch-free instead of
+        // by early return keeps a real secret branch from ever hiding here.
+        let mut ok = !d.ct_is_zero() & d.ct_lt(&n) & !k_int.ct_is_zero() & k_int.ct_lt(&n);
 
         let (Some(fp), Some(fn_)) = (FieldCt::new(p), FieldCt::new(n)) else {
             return false;
@@ -1598,28 +1605,23 @@ pub mod dangerous {
 
         // r = x(k·G) mod n.
         let kg = scalar_mul_ct(&fp, &a_res, &b3, eb * 8, &k_int, &g);
-        let Some(rx) = affine_x_ct(&fp, &kg) else {
-            return false;
-        };
+        let (rx, rx_ok) = affine_x_ct(&fp, &kg);
+        ok &= rx_ok;
         let r = fn_.into_raw(&fn_.reduce(&rx));
-        if r == zero {
-            return false;
-        }
+        ok &= !r.ct_is_zero();
 
         // s = k⁻¹ · (e + r·d) mod n.
         let e = fn_.reduce(&hash_to_scalar::<T>(digest, bitlen_be(C::N)));
-        let Some(k_inv) = Option::from(fn_.inv_fermat(&fn_.reduce(&k_int))) else {
-            return false;
-        };
+        // k⁻¹ via Fermat exp — branch-free; `k ≠ 0` is already folded into
+        // `ok`, and `exp` yields 0 at k = 0 (making `s = 0`, also rejected).
+        let k_inv = fn_.exp(&fn_.reduce(&k_int), &fermat_exp(fn_.modulus()));
         let rd = fn_.mul(&fn_.reduce(&r), &fn_.reduce(&d));
         let s = fn_.into_raw(&fn_.mul(&k_inv, &fn_.add(&e, &rd)));
-        if s == zero {
-            return false;
-        }
+        ok &= !s.ct_is_zero();
 
         to_be_ct::<T>(&r, out_r);
         to_be_ct::<T>(&s, out_s);
-        true
+        bool::from(ok)
     }
 
     /// **Constant-time** ECDSA signing with an RFC 6979 deterministic
@@ -1639,10 +1641,14 @@ pub mod dangerous {
     ) -> bool {
         let eb = C::ELEM_BYTES;
         let mut k = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
-        if !derive_nonce_rfc6979_ct::<C, Tct, M>(private_key, digest, &mut k[..eb]) {
-            return false;
-        }
-        sign_prehashed_ct_with_k::<C, Tct>(private_key, digest, &k[..eb], out_r, out_s)
+        // Both halves run unconditionally and their validity bools combine
+        // branch-free. The derivation returns a *tainted* validity bool
+        // (folded from the secret key), so branching on it would just move
+        // the leak up into this frame; `&` keeps it branch-free.
+        let derived = derive_nonce_rfc6979_ct::<C, Tct, M>(private_key, digest, &mut k[..eb]);
+        let signed =
+            sign_prehashed_ct_with_k::<C, Tct>(private_key, digest, &k[..eb], out_r, out_s);
+        derived & signed
     }
 
     /// Affine `(X/Z, Y/Z)` (RCB projective), or `None` at the
