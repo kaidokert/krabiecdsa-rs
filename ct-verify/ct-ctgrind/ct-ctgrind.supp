@@ -1,0 +1,73 @@
+# Valgrind memcheck suppressions for ct-ctgrind — reviewed, not blanket.
+#
+# The constant-time sign is branch-free: `sign_prehashed_ct_with_k`,
+# `derive_nonce_rfc6979_ct`, `affine_x_ct`, and the RCB ladder fold every
+# secret-derived decision (key/nonce range, `r`/`s == 0`, the RCB
+# identity, `k⁻¹`) into a `subtle::Choice` returned once at the end, so
+# they carry NO suppression — any `Cond`/`Value`/`Addr` on tainted data
+# in those frames fails the gate. Secret scalars serialize through the
+# branch-free `to_be_ct`; the variable-time `to_be` is `#[inline(never)]`
+# so misusing it on a secret surfaces at its own (unsuppressed) frame,
+# which the `nct_fix__neg__vartime_serialize` control proves the gate
+# catches.
+#
+# Exactly ONE secret-dependent branch is declassified — RFC 6979's
+# rejection loop — plus data-oblivious byte plumbing. `Addr` errors (a
+# secret-dependent memory *address*, the cache/table-lookup attack
+# surface) are NEVER suppressed.
+#
+# ---------------------------------------------------------------------
+# (1) RFC 6979 rejection-loop count (declassification).
+#
+# `rfc6979_nonce` loops until a candidate lands in `[1, n)`; the loop-exit
+# branch depends on the (secret-derived) candidate. This is RFC 6979's
+# inherent, irreducible timing signal: reject probability ~2^-32 for
+# these curves, effectively always one iteration, revealing negligible
+# information about the key. It is the frame's SOLE secret-dependent
+# branch — the candidate range test is constant-time (`ct_lt`/
+# `ct_is_zero`) and the HMAC-DRBG it drives is data-oblivious (SHA-2/HMAC
+# branch on neither key nor message).
+{
+   rfc6979-rejection-loop-cond
+   Memcheck:Cond
+   fun:*rfc6979_nonce*
+}
+{
+   rfc6979-rejection-loop-value
+   Memcheck:Value8
+   fun:*rfc6979_nonce*
+}
+
+# ---------------------------------------------------------------------
+# (2) memcpy / memmove of tainted bytes (data-oblivious).
+#
+# Parsing the secret scalars and shuffling secret-derived bytes calls
+# memcpy/memmove on tainted memory. glibc's memcpy is data-oblivious (it
+# copies regardless of value), but Valgrind's shadow propagation through
+# its word-at-a-time SIMD paths is imprecise and reports spurious errors
+# *inside* the routine. memcpy never branches on the data it copies; a
+# secret-dependent *address* would appear a frame above, not here.
+{
+   memcpy-tainted-from-sign-fixture-cond
+   Memcheck:Cond
+   fun:*memcpy*
+   fun:ct_fix__ecdsa_sign_*
+}
+{
+   memcpy-tainted-from-sign-fixture-value
+   Memcheck:Value8
+   fun:*memcpy*
+   fun:ct_fix__ecdsa_sign_*
+}
+{
+   memcpy-tainted-from-hmac-cond
+   Memcheck:Cond
+   fun:*memcpy*
+   fun:*hmac_into*
+}
+{
+   memcpy-tainted-from-hmac-value
+   Memcheck:Value8
+   fun:*memcpy*
+   fun:*hmac_into*
+}

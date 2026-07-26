@@ -1,0 +1,3 @@
+# Harness lockfiles follow the repo policy (never committed).
+Cargo.lock
+target/
