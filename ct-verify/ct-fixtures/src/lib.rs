@@ -245,9 +245,7 @@ pub unsafe extern "C" fn nct_fix__neg__vartime_cmp__p256(s_ptr: *const [u8; 32],
 /// frame must never be allowed to hide.
 ///
 /// The set-bit path does a `write_volatile` so the branch survives
-/// optimization — a plain accumulate folds to a branch-free byte copy
-/// (which is, tellingly, why source that *looks* variable-time can't be
-/// trusted to be, and why `to_be_ct` is written branch-free by construction).
+/// optimization — a plain accumulate folds to a branch-free byte copy.
 ///
 /// # Safety
 /// `s_ptr` must be a valid, aligned pointer to a 32-byte array;
