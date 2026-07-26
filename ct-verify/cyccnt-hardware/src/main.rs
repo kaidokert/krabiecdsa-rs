@@ -7,23 +7,69 @@ use fixed_bigint::FixedUInt;
 use hmac::Hmac;
 use krabi_caliper::Unit;
 use krabi_caliper::cortex_m::DwtMeasurementPlatform;
-use krabi_caliper::paired::MaxSpread;
 use krabi_caliper::protocol::rtt::print;
 use krabi_caliper::report::Field;
 use krabi_caliper::stack::{StackProbe, paint_cortex_m_runtime};
-use krabi_caliper::suite::{FixtureSpec, PairedSuite, PairedSuiteConfig, PairedSuiteFields};
+use krabi_caliper::suite::{PairedSuite, PairedSuiteConfig, PairedSuiteFields};
 use krabiecdsa::const_num_traits::Ct;
-use krabiecdsa::dangerous::{SigningKey, derive_nonce_rfc6979, sign_prehashed_ct_with_k};
+use krabiecdsa::dangerous::SigningKey;
+#[cfg(feature = "fix-nonce")]
+use krabiecdsa::dangerous::derive_nonce_rfc6979_ct;
+#[cfg(feature = "fix-fixedsign")]
+use krabiecdsa::dangerous::sign_prehashed_ct_with_k;
 use krabiecdsa::p256::{self, P256};
 use sha2::Sha256;
+use stm32f4xx_hal::pac;
+use stm32f4xx_hal::prelude::*;
 
 const TRIALS: usize = 4;
 const MAX_POSITIVE_SPREAD: u64 = 32;
 const SUITE: &str = "krabiecdsa-p256-sign";
 const STACK_SAFE_ZONE: usize = 512;
 
-type Nct = FixedUInt<u32, 8>;
+// Exactly one carrier and one fixture must be active. Each (carrier, fixture)
+// pair is a separate probe-rs attachment (the campaign matrix), so a fresh
+// session per fixture keeps cross-fixture probe/bus state from perturbing a
+// later fixture's first timed samples.
+const _: () = assert!(
+    cfg!(feature = "carrier-u32x8") as usize
+        + cfg!(feature = "carrier-u8x32") as usize
+        + cfg!(feature = "carrier-u64x4") as usize
+        == 1,
+    "enable exactly one carrier feature",
+);
+const _: () = assert!(
+    cfg!(feature = "fix-nonce") as usize
+        + cfg!(feature = "fix-fixedsign") as usize
+        + cfg!(feature = "fix-wholesign") as usize
+        + cfg!(feature = "fix-keygen") as usize
+        == 1,
+    "enable exactly one fixture feature",
+);
+
+// The three carriers the ctgrind matrix also covers: the native ARM word, the
+// AVR-class byte limb, and the double-word path (emulated on the 32-bit M4).
+#[cfg(feature = "carrier-u32x8")]
 type CtBackend = FixedUInt<u32, 8, Ct>;
+#[cfg(feature = "carrier-u32x8")]
+type Nct = FixedUInt<u32, 8>;
+#[cfg(feature = "carrier-u32x8")]
+const CARRIER: &str = "u32x8";
+
+#[cfg(feature = "carrier-u8x32")]
+type CtBackend = FixedUInt<u8, 32, Ct>;
+#[cfg(feature = "carrier-u8x32")]
+type Nct = FixedUInt<u8, 32>;
+#[cfg(feature = "carrier-u8x32")]
+const CARRIER: &str = "u8x32";
+
+#[cfg(feature = "carrier-u64x4")]
+type CtBackend = FixedUInt<u64, 4, Ct>;
+#[cfg(feature = "carrier-u64x4")]
+type Nct = FixedUInt<u64, 4>;
+#[cfg(feature = "carrier-u64x4")]
+const CARRIER: &str = "u64x4";
+
 type P256SigningKey = SigningKey<P256>;
 
 // Two independently generated, openssl-verified private scalars from the
@@ -43,46 +89,37 @@ const DIGEST: [u8; 32] = [
 // RFC 6979 P-256 nonce for the standard "sample" vector. Reusing it across
 // test keys is safe only in this non-production fixture and isolates the CT
 // signature-math layer from deterministic nonce derivation.
+#[cfg(feature = "fix-fixedsign")]
 const FIXED_K: [u8; 32] = [
     0xa6, 0xe3, 0xc5, 0x7d, 0xd0, 0x1a, 0xbe, 0x90, 0x08, 0x65, 0x38, 0x39, 0x83, 0x55, 0xdd, 0x4c,
     0x3b, 0x17, 0xaa, 0x87, 0x33, 0x82, 0xb0, 0xf2, 0x4d, 0x61, 0x29, 0x49, 0x3d, 0x8a, 0xad, 0x60,
 ];
 
+// Two clock tiers, selected by build feature:
+//  - clock-30mhz (default): the F407's 0-wait-state flash ceiling. At 0 WS the
+//    core-cycle counts carry no fetch jitter, so the tight spread gate holds —
+//    the deterministic CT-verdict tier.
+//  - clock-168mhz: needs wait states + the ART prefetch (jitter), but ~5.6x the
+//    wall-clock throughput — the functional-smoke tier for the slow carriers,
+//    whose signs would time out at 30 MHz.
 #[cfg(feature = "clock-168mhz")]
 const CLOCK_PROFILE: &str = "hsi-pll-168mhz";
-#[cfg(not(feature = "clock-168mhz"))]
-const CLOCK_PROFILE: &str = "reset-hsi-16mhz";
-
 #[cfg(feature = "clock-168mhz")]
-fn configure_clock() -> u32 {
-    use stm32f4xx_hal::{pac, prelude::*, rcc::Config};
-
-    let device = pac::Peripherals::take().unwrap();
-    let rcc = device.RCC.freeze(
-        Config::hsi()
-            .sysclk(168.MHz())
-            .hclk(168.MHz())
-            .pclk1(42.MHz())
-            .pclk2(84.MHz()),
-    );
-    let hclk_hz = rcc.clocks.hclk().raw();
-    assert_eq!(hclk_hz, 168_000_000);
-    hclk_hz
-}
-
+const HCLK_HZ: u32 = 168_000_000;
 #[cfg(not(feature = "clock-168mhz"))]
-fn configure_clock() -> u32 {
-    16_000_000
-}
+const CLOCK_PROFILE: &str = "hsi-pll-30mhz-0ws";
+#[cfg(not(feature = "clock-168mhz"))]
+const HCLK_HZ: u32 = 30_000_000;
 
 fn paint_stack() -> StackProbe<'static> {
     // SAFETY: cortex-m-rt owns the single stack described by its linker symbols.
     unsafe { paint_cortex_m_runtime::<STACK_SAFE_ZONE>() }.unwrap()
 }
 
+#[cfg(feature = "fix-nonce")]
 fn nonce_once(key: &[u8; 32]) -> bool {
     let mut nonce = [0u8; 32];
-    let ok = derive_nonce_rfc6979::<P256, Nct, Hmac<Sha256>>(
+    let ok = derive_nonce_rfc6979_ct::<P256, CtBackend, Hmac<Sha256>>(
         black_box(key),
         black_box(&DIGEST),
         &mut nonce,
@@ -91,6 +128,7 @@ fn nonce_once(key: &[u8; 32]) -> bool {
     ok
 }
 
+#[cfg(feature = "fix-fixedsign")]
 fn fixed_nonce_sign_once(key: &[u8; 32]) -> bool {
     let mut r = [0u8; 32];
     let mut s = [0u8; 32];
@@ -105,12 +143,24 @@ fn fixed_nonce_sign_once(key: &[u8; 32]) -> bool {
     ok
 }
 
+#[cfg(feature = "fix-wholesign")]
 fn whole_sign_once(key: &P256SigningKey) -> bool {
     let mut r = [0u8; 32];
     let mut s = [0u8; 32];
-    let ok =
-        black_box(key).sign_prehashed::<CtBackend, Hmac<Sha256>>(black_box(&DIGEST), &mut r, &mut s);
+    let ok = black_box(key).sign_prehashed::<CtBackend, Hmac<Sha256>>(
+        black_box(&DIGEST),
+        &mut r,
+        &mut s,
+    );
     let _ = black_box((r, s));
+    ok
+}
+
+#[cfg(feature = "fix-keygen")]
+fn keygen_once(key: &P256SigningKey) -> bool {
+    let mut pubkey = [0u8; 65];
+    let ok = black_box(key).verifying_key_sec1::<CtBackend>(&mut pubkey);
+    let _ = black_box(pubkey);
     ok
 }
 
@@ -127,12 +177,14 @@ fn negative_early_exit(key: &[u8; 32]) -> bool {
     true
 }
 
+#[cfg(any(feature = "fix-nonce", feature = "fix-fixedsign"))]
 fn copy_key(input: &[u8; 32]) -> [u8; 32] {
     let mut key = [0; 32];
     key.copy_from_slice(input);
     key
 }
 
+#[cfg(any(feature = "fix-wholesign", feature = "fix-keygen"))]
 fn prepare_signing_key(input: &[u8; 32]) -> P256SigningKey {
     P256SigningKey::from_bytes(input).unwrap()
 }
@@ -160,8 +212,19 @@ fn stop() -> ! {
 #[entry]
 fn main() -> ! {
     let mut reporter = krabi_caliper::protocol::rtt::init_ct_compatible();
-    let hclk_hz = configure_clock();
+    let hclk_hz = HCLK_HZ;
     let mut peripherals = cortex_m::Peripherals::take().unwrap();
+    // Program the RCC for the selected sysclk before enabling the cycle
+    // counter. `sysclk == hclk` here; the HAL sets flash wait states for the
+    // clock (0 WS at 30 MHz, wait states at 168). PLL is HSI-sourced, so
+    // reported time is ±1% while the cycle-count verdict stays exact.
+    let dp = pac::Peripherals::take().unwrap();
+    let _clocks = dp
+        .RCC
+        .constrain()
+        .cfgr
+        .sysclk((HCLK_HZ / 1_000_000).MHz())
+        .freeze();
     let mut platform = DwtMeasurementPlatform::enable(
         &mut peripherals.DCB,
         &mut peripherals.DWT,
@@ -181,7 +244,7 @@ fn main() -> ! {
 
     let _ = black_box((&key_a, &key_b));
     let run_fields = [
-        Field::token("carrier", "u32x8"),
+        Field::token("carrier", CARRIER),
         Field::token("clock_profile", CLOCK_PROFILE),
         Field::u64("hclk_hz", hclk_hz as u64),
         Field::u64("trials", TRIALS as u64),
@@ -208,23 +271,16 @@ fn main() -> ! {
         },
     )
     .unwrap();
+
+    // One fixture per binary (selected by the fix-* feature); the negative
+    // control runs in every chunk so each attachment is independently
+    // trustworthy — a chunk that can't separate A from B is rejected regardless
+    // of its positive verdict.
+    #[cfg(feature = "fix-nonce")]
     suite
-        .fixture_prepared(
-            FixtureSpec {
-                name: "rfc6979_nonce",
-                class: "positive-residual-gap",
-                policy: "max-spread",
-            },
-            &KEY_A,
-            &KEY_B,
-            MaxSpread {
-                ticks: MAX_POSITIVE_SPREAD,
-                require_overlap: false,
-            },
-            copy_key,
-            nonce_once,
-        )
+        .positive_prepared("rfc6979_nonce", &KEY_A, &KEY_B, copy_key, nonce_once)
         .unwrap();
+    #[cfg(feature = "fix-fixedsign")]
     suite
         .positive_prepared(
             "ct_sign_fixed_nonce",
@@ -234,23 +290,27 @@ fn main() -> ! {
             fixed_nonce_sign_once,
         )
         .unwrap();
+    #[cfg(feature = "fix-wholesign")]
     suite
-        .fixture_prepared(
-            FixtureSpec {
-                name: "signing_key_rfc6979",
-                class: "positive-whole-operation",
-                policy: "max-spread",
-            },
+        .positive_prepared(
+            "signing_key_rfc6979",
             &KEY_A,
             &KEY_B,
-            MaxSpread {
-                ticks: MAX_POSITIVE_SPREAD,
-                require_overlap: false,
-            },
             prepare_signing_key,
             whole_sign_once,
         )
         .unwrap();
+    #[cfg(feature = "fix-keygen")]
+    suite
+        .positive_prepared(
+            "verifying_key",
+            &KEY_A,
+            &KEY_B,
+            prepare_signing_key,
+            keygen_once,
+        )
+        .unwrap();
+
     const ZERO: [u8; 32] = [0; 32];
     suite
         .negative("negative_early_exit", &ZERO, &KEY_A, negative_early_exit)
@@ -258,7 +318,7 @@ fn main() -> ! {
     // SAFETY: this single-threaded firmware exclusively owns its runtime stack.
     let stack = unsafe { stack_probe.measure() };
     suite
-        .stack_measurement(stack, &[Field::token("carrier", "u32x8")])
+        .stack_measurement(stack, &[Field::token("carrier", CARRIER)])
         .unwrap();
     assert!(!stack.overflowed);
     suite.finish().unwrap();

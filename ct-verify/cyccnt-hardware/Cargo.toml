@@ -2,22 +2,39 @@
 name = "krabiecdsa-cyccnt-hardware"
 version = "0.1.0"
 edition = "2024"
-# 1.88 (above the crate's 1.87) — stm32f4xx-hal 0.23 pulls time ≥ 0.3.54,
-# whose MSRV is 1.88. This embedded campaign isn't part of the host
-# harness's 1.87-pinned codegen lock.
+# stm32f4xx-hal (used only for the RCC 30 MHz clock config) pulls time ≥ 0.3.54,
+# whose MSRV is 1.88. This embedded campaign is separate from the host harness's
+# 1.87-pinned codegen lock.
 rust-version = "1.88"
 publish = false
 
 [features]
-default = ["clock-168mhz"]
-clock-168mhz = ["dep:stm32f4xx-hal"]
+# Exactly one carrier and one fixture must be active (const asserts in main.rs).
+# The default lets a bare `cargo run` build; the campaign passes
+# `--no-default-features` plus one explicit carrier + fixture per attachment, so
+# the per-chunk builds never collide.
+default = ["carrier-u32x8", "fix-wholesign", "clock-30mhz"]
+carrier-u32x8 = []
+carrier-u8x32 = []
+carrier-u64x4 = []
+fix-nonce = []
+fix-fixedsign = []
+fix-wholesign = []
+fix-keygen = []
+# Clock tier (see main.rs). clock-30mhz is the 0-wait-state deterministic
+# CT-verdict regime; clock-168mhz trades fetch jitter for ~5.6x throughput on
+# the slow carriers. Exactly one is set via the profile's build-features.
+clock-30mhz = []
+clock-168mhz = []
 
 [dependencies]
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7"
+# Used only to program the RCC for a 30 MHz sysclk (the F407's 0-wait-state
+# flash ceiling); the rest of the campaign runs bare on cortex-m/cortex-m-rt.
+stm32f4xx-hal = { version = "0.22", features = ["stm32f407"] }
 krabi-caliper = { version = "=0.1.2", features = ["cortex-m-dwt", "paired", "rtt", "stack"] }
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
 hmac = { version = "0.12", default-features = false }
 krabiecdsa = { path = "../../ecdsa", features = ["experimental-signing"] }
 sha2 = { version = "0.10", default-features = false }
-stm32f4xx-hal = { version = "0.23", default-features = false, features = ["stm32f407"], optional = true }
