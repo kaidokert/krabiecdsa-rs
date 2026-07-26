@@ -124,6 +124,7 @@ taint_det_fixture!(
 unsafe extern "C" {
     fn nct_fix__neg__secret_branch__p256(s_ptr: *const [u8; 32], out_ptr: *mut u8);
     fn nct_fix__neg__vartime_cmp__p256(s_ptr: *const [u8; 32], out_ptr: *mut u8);
+    fn nct_fix__neg__vartime_serialize__p256(s_ptr: *const [u8; 32], out_ptr: *mut u8);
 }
 ctgrind_fixture!(nct_fix__neg__secret_branch__p256, {
     let s = [0u8; 32];
@@ -138,6 +139,14 @@ ctgrind_fixture!(nct_fix__neg__vartime_cmp__p256, {
     let mut out = 0u8;
     taint_val(&s);
     unsafe { nct_fix__neg__vartime_cmp__p256(&s, &mut out) }
+    untaint_val(&out);
+    let _ = black_box(out);
+});
+ctgrind_fixture!(nct_fix__neg__vartime_serialize__p256, {
+    let s = [0u8; 32];
+    let mut out = 0u8;
+    taint_val(&s);
+    unsafe { nct_fix__neg__vartime_serialize__p256(&s, &mut out) }
     untaint_val(&out);
     let _ = black_box(out);
 });

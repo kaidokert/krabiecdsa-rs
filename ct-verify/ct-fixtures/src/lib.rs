@@ -238,6 +238,32 @@ pub unsafe extern "C" fn nct_fix__neg__vartime_cmp__p256(s_ptr: *const [u8; 32],
     unsafe { *out_ptr = black_box(equal) }
 }
 
+/// Negative control — a variable-time byte serializer: the per-bit `if`
+/// shape of the crate's vartime `to_be`. MUST trip, proving the gate
+/// catches a secret serialized through a data-dependent branch — the leak
+/// class the CT `to_be_ct` exists to prevent, which a suppressed sign
+/// frame must never be allowed to hide.
+///
+/// # Safety
+/// `s_ptr` must be a valid, aligned pointer to a 32-byte array;
+/// `out_ptr` to a writable byte.
+#[no_mangle]
+pub unsafe extern "C" fn nct_fix__neg__vartime_serialize__p256(
+    s_ptr: *const [u8; 32],
+    out_ptr: *mut u8,
+) {
+    let s = black_box(unsafe { *s_ptr });
+    let mut acc = s[0];
+    let mut b = 0u8;
+    for j in 0..8 {
+        if acc & 1 != 0 {
+            b |= 1 << j;
+        }
+        acc >>= 1;
+    }
+    unsafe { *out_ptr = black_box(b) }
+}
+
 /// No-op that forces this rlib onto a consumer's link line. The taint
 /// harness links `ct-fixtures` as an rlib and calls its `#[no_mangle]`
 /// symbols by name across the C ABI; without a referenced Rust item the

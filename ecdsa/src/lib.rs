@@ -937,6 +937,12 @@ pub mod dangerous {
     /// bound needed on the backend). Consumes a running copy one bit
     /// at a time — single-bit shifts rather than one wide shift per
     /// bit, so it stays linear in the backend's width.
+    // `#[inline(never)]`: the per-bit `if` below is variable-time, so this
+    // must never be reachable from a secret on the constant-time path.
+    // Keeping it a distinct symbol means the taint gate reports any such
+    // misuse at *this* frame (unsuppressed) instead of letting it hide
+    // inside a suppressed sign frame — use `to_be_ct` for secret scalars.
+    #[inline(never)]
     fn to_be<T: ScalarBytes>(v: &T, out: &mut [u8]) {
         let mut acc = v.clone();
         for slot in out.iter_mut().rev() {
@@ -947,6 +953,27 @@ pub mod dangerous {
                 if acc.clone() & T::one() != T::zero() {
                     b |= 1 << j;
                 }
+                acc >>= 1;
+            }
+            *slot = b;
+        }
+    }
+
+    /// Branch-free big-endian serialization for a **secret** scalar on the
+    /// Ct backend. [`to_be`]'s per-bit `if` leaks the value's bits in
+    /// variable time; here the bit selects via `subtle`'s branch-free
+    /// `conditional_select` instead. Used for the secret nonce and the
+    /// signature scalars so the constant-time sign never serializes a
+    /// secret through a data-dependent branch.
+    #[inline(never)]
+    fn to_be_ct<T: ConstantTimeInt>(v: &T, out: &mut [u8]) {
+        use subtle::ConditionallySelectable;
+        let mut acc = *v;
+        for slot in out.iter_mut().rev() {
+            let mut b = 0u8;
+            for j in 0..8 {
+                let set = !(acc & T::one()).ct_is_zero();
+                b |= u8::conditional_select(&0u8, &(1u8 << j), set);
                 acc >>= 1;
             }
             *slot = b;
@@ -1269,7 +1296,7 @@ pub mod dangerous {
         let Some(h1_slot) = h1.get_mut(..eb) else {
             return false;
         };
-        to_be::<Tct>(&e, h1_slot);
+        to_be_ct::<Tct>(&e, h1_slot);
         let Some(h1_octets) = h1.get(..eb) else {
             return false;
         };
@@ -1281,7 +1308,7 @@ pub mod dangerous {
         else {
             return false;
         };
-        to_be::<Tct>(&k, out_k);
+        to_be_ct::<Tct>(&k, out_k);
         k.zeroize();
         true
     }
@@ -1590,8 +1617,8 @@ pub mod dangerous {
             return false;
         }
 
-        to_be::<T>(&r, out_r);
-        to_be::<T>(&s, out_s);
+        to_be_ct::<T>(&r, out_r);
+        to_be_ct::<T>(&s, out_s);
         true
     }
 
@@ -1724,8 +1751,8 @@ pub mod dangerous {
                 return false;
             };
             out[0] = 0x04;
-            to_be::<Tct>(&qx, &mut out[1..1 + eb]);
-            to_be::<Tct>(&qy, &mut out[1 + eb..1 + 2 * eb]);
+            to_be_ct::<Tct>(&qx, &mut out[1..1 + eb]);
+            to_be_ct::<Tct>(&qy, &mut out[1 + eb..1 + 2 * eb]);
             true
         }
     }

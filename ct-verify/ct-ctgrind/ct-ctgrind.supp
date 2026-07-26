@@ -8,13 +8,18 @@
 #
 #     nm libct_fixtures.a | grep -E 'scalar_mul_ct|add_rcb|sign_prehashed_ct_with_k|rfc6979_nonce'
 #
-# The branchless ladder (`scalar_mul_ct`, `add_rcb`) and the modmath CT
-# field ops carry NO suppression: a real secret-dependent branch there
-# surfaces at its own symbol and fails the gate. Only the frames below —
-# each doing a genuinely public decision — are declassified, and only for
-# `Cond` (a control-flow decision) and `Value` (a tainted value feeding
-# that decision). `Addr` errors — a secret-dependent memory *address*,
-# the cache/table-lookup attack surface — are NOT suppressed anywhere.
+# The branchless ladder (`scalar_mul_ct`, `add_rcb`), the modmath CT field
+# ops, and scalar serialization all carry NO suppression: a real
+# secret-dependent branch there surfaces at its own symbol and fails the
+# gate. Secret scalars serialize through the branch-free `to_be_ct`; the
+# variable-time `to_be` is `#[inline(never)]` too, so misusing it on a
+# secret surfaces at the `to_be` frame (unsuppressed), never hidden inside
+# a sign frame — the `nct_fix__neg__vartime_serialize` control proves the
+# gate catches exactly that. Only the frames below — each doing a
+# genuinely public decision — are declassified, and only for `Cond` (a
+# control-flow decision) and `Value` (a tainted value feeding it). `Addr`
+# errors — a secret-dependent memory *address*, the cache/table-lookup
+# attack surface — are NOT suppressed anywhere.
 #
 # ---------------------------------------------------------------------
 # (1) Public pass/fail outcomes of the sign (declassification).
