@@ -108,7 +108,8 @@ fn fixed_nonce_sign_once(key: &[u8; 32]) -> bool {
 fn whole_sign_once(key: &P256SigningKey) -> bool {
     let mut r = [0u8; 32];
     let mut s = [0u8; 32];
-    let ok = key.sign_prehashed::<CtBackend, Hmac<Sha256>>(black_box(&DIGEST), &mut r, &mut s);
+    let ok =
+        black_box(key).sign_prehashed::<CtBackend, Hmac<Sha256>>(black_box(&DIGEST), &mut r, &mut s);
     let _ = black_box((r, s));
     ok
 }
@@ -117,7 +118,7 @@ fn whole_sign_once(key: &P256SigningKey) -> bool {
 fn negative_early_exit(key: &[u8; 32]) -> bool {
     let mut leading_zeroes = 0usize;
     for &byte in black_box(key) {
-        if byte != 0 {
+        if black_box(byte) != 0 {
             break;
         }
         leading_zeroes += 1;
