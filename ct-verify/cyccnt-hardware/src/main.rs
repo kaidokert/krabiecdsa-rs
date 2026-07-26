@@ -13,7 +13,7 @@ use krabi_caliper::report::Field;
 use krabi_caliper::stack::{StackProbe, paint_cortex_m_runtime};
 use krabi_caliper::suite::{FixtureSpec, PairedSuite, PairedSuiteConfig, PairedSuiteFields};
 use krabiecdsa::const_num_traits::Ct;
-use krabiecdsa::dangerous::{SigningKey, derive_nonce_rfc6979, sign_prehashed_ct_with_k};
+use krabiecdsa::dangerous::{SigningKey, derive_nonce_rfc6979_ct, sign_prehashed_ct_with_k};
 use krabiecdsa::p256::{self, P256};
 use sha2::Sha256;
 
@@ -48,32 +48,12 @@ const FIXED_K: [u8; 32] = [
     0x3b, 0x17, 0xaa, 0x87, 0x33, 0x82, 0xb0, 0xf2, 0x4d, 0x61, 0x29, 0x49, 0x3d, 0x8a, 0xad, 0x60,
 ];
 
-#[cfg(feature = "clock-168mhz")]
-const CLOCK_PROFILE: &str = "hsi-pll-168mhz";
-#[cfg(not(feature = "clock-168mhz"))]
+// The rig runs at the reset default (HSI, 16 MHz): no PLL, so flash needs zero
+// wait states and the DWT cycle counter carries no wait-state jitter. Running
+// bare (no HAL) is what keeps this crate off `stm32f4xx-hal`'s `time`/MSRV pull
+// and makes the measured cycle counts clean.
 const CLOCK_PROFILE: &str = "reset-hsi-16mhz";
-
-#[cfg(feature = "clock-168mhz")]
-fn configure_clock() -> u32 {
-    use stm32f4xx_hal::{pac, prelude::*, rcc::Config};
-
-    let device = pac::Peripherals::take().unwrap();
-    let rcc = device.RCC.freeze(
-        Config::hsi()
-            .sysclk(168.MHz())
-            .hclk(168.MHz())
-            .pclk1(42.MHz())
-            .pclk2(84.MHz()),
-    );
-    let hclk_hz = rcc.clocks.hclk().raw();
-    assert_eq!(hclk_hz, 168_000_000);
-    hclk_hz
-}
-
-#[cfg(not(feature = "clock-168mhz"))]
-fn configure_clock() -> u32 {
-    16_000_000
-}
+const HCLK_HZ: u32 = 16_000_000;
 
 fn paint_stack() -> StackProbe<'static> {
     // SAFETY: cortex-m-rt owns the single stack described by its linker symbols.
@@ -82,7 +62,7 @@ fn paint_stack() -> StackProbe<'static> {
 
 fn nonce_once(key: &[u8; 32]) -> bool {
     let mut nonce = [0u8; 32];
-    let ok = derive_nonce_rfc6979::<P256, Nct, Hmac<Sha256>>(
+    let ok = derive_nonce_rfc6979_ct::<P256, CtBackend, Hmac<Sha256>>(
         black_box(key),
         black_box(&DIGEST),
         &mut nonce,
@@ -108,8 +88,11 @@ fn fixed_nonce_sign_once(key: &[u8; 32]) -> bool {
 fn whole_sign_once(key: &P256SigningKey) -> bool {
     let mut r = [0u8; 32];
     let mut s = [0u8; 32];
-    let ok =
-        black_box(key).sign_prehashed::<CtBackend, Hmac<Sha256>>(black_box(&DIGEST), &mut r, &mut s);
+    let ok = black_box(key).sign_prehashed::<CtBackend, Hmac<Sha256>>(
+        black_box(&DIGEST),
+        &mut r,
+        &mut s,
+    );
     let _ = black_box((r, s));
     ok
 }
@@ -160,7 +143,7 @@ fn stop() -> ! {
 #[entry]
 fn main() -> ! {
     let mut reporter = krabi_caliper::protocol::rtt::init_ct_compatible();
-    let hclk_hz = configure_clock();
+    let hclk_hz = HCLK_HZ;
     let mut peripherals = cortex_m::Peripherals::take().unwrap();
     let mut platform = DwtMeasurementPlatform::enable(
         &mut peripherals.DCB,
@@ -208,22 +191,10 @@ fn main() -> ! {
         },
     )
     .unwrap();
+    // RFC 6979 nonce derivation is constant-time (`derive_nonce_rfc6979_ct`),
+    // so this is an ordinary protected positive — not a residual timing gap.
     suite
-        .fixture_prepared(
-            FixtureSpec {
-                name: "rfc6979_nonce",
-                class: "positive-residual-gap",
-                policy: "max-spread",
-            },
-            &KEY_A,
-            &KEY_B,
-            MaxSpread {
-                ticks: MAX_POSITIVE_SPREAD,
-                require_overlap: false,
-            },
-            copy_key,
-            nonce_once,
-        )
+        .positive_prepared("rfc6979_nonce", &KEY_A, &KEY_B, copy_key, nonce_once)
         .unwrap();
     suite
         .positive_prepared(
