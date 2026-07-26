@@ -28,12 +28,37 @@ timeout-seconds = 300
 target-dir = "target"
 artifact-extension = ""
 
+# One case per carrier; each chunk is one fixture, so all inherit the profile's
+# 300 s limit.
 [[case-sets.krabiecdsa-signing-cyccnt]]
-name = "p256-layered-signing"
+name = "u32x8"
 binary = "krabiecdsa-cyccnt-hardware"
+features = ["carrier-u32x8"]
+expected-suite = "krabiecdsa-p256-sign"
+
+[[case-sets.krabiecdsa-signing-cyccnt]]
+name = "u8x32"
+binary = "krabiecdsa-cyccnt-hardware"
+features = ["carrier-u8x32"]
+expected-suite = "krabiecdsa-p256-sign"
+
+[[case-sets.krabiecdsa-signing-cyccnt]]
+name = "u64x4"
+binary = "krabiecdsa-cyccnt-hardware"
+features = ["carrier-u64x4"]
 expected-suite = "krabiecdsa-p256-sign"
 
 [campaigns.krabiecdsa-jtrace-f407]
 profile = "jtrace-f407"
 case-set = "krabiecdsa-signing-cyccnt"
+# Expand the three carrier cases across the fixture axis so each
+# (carrier, fixture) pair — 12 in all — measures in its own probe-rs session.
+# A fresh session per fixture keeps cross-fixture probe/bus state from
+# perturbing a later fixture's first timed samples; each pair is independently
+# gated with its own negative control.
+matrix = { fixture = ["nonce", "fixedsign", "wholesign", "keygen"] }
+matrix-features = ["fix-{fixture}"]
+# gate = false for the first bench baseline; flip to true (matching ed25519)
+# once the post-CT-derivation run confirms all positives hold and the control
+# separates.
 constant-time = { welch-threshold = 4.5, minimum-samples-per-class = 4, protected-classes = ["positive", "positive-whole-operation"], control-classes = ["negative"], gate = false }
