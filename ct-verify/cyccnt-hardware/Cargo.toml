@@ -2,6 +2,10 @@
 name = "krabiecdsa-cyccnt-hardware"
 version = "0.1.0"
 edition = "2024"
+# 1.88 (above the crate's 1.87) — stm32f4xx-hal 0.23 pulls time ≥ 0.3.54,
+# whose MSRV is 1.88. This embedded campaign isn't part of the host
+# harness's 1.87-pinned codegen lock.
+rust-version = "1.88"
 publish = false
 
 [features]

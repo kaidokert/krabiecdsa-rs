@@ -108,7 +108,7 @@ fn fixed_nonce_sign_once(key: &[u8; 32]) -> bool {
 fn whole_sign_once(key: &P256SigningKey) -> bool {
     let mut r = [0u8; 32];
     let mut s = [0u8; 32];
-    let ok = key.sign_prehashed::<Nct, CtBackend, Hmac<Sha256>>(black_box(&DIGEST), &mut r, &mut s);
+    let ok = key.sign_prehashed::<CtBackend, Hmac<Sha256>>(black_box(&DIGEST), &mut r, &mut s);
     let _ = black_box((r, s));
     ok
 }
@@ -142,7 +142,7 @@ fn preflight(key_bytes: &[u8; 32]) -> Option<P256SigningKey> {
     let mut r = [0u8; 32];
     let mut s = [0u8; 32];
     if !key.verifying_key_sec1::<CtBackend>(&mut pubkey)
-        || !key.sign_prehashed::<Nct, CtBackend, Hmac<Sha256>>(&DIGEST, &mut r, &mut s)
+        || !key.sign_prehashed::<CtBackend, Hmac<Sha256>>(&DIGEST, &mut r, &mut s)
         || !p256::verify_prehashed::<Nct>(&pubkey, &DIGEST, &r, &s)
     {
         return None;
