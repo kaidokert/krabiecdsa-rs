@@ -16,10 +16,13 @@ probe = "${KRABI_PROBE}"
 clock-frequency-hz = 168000000
 executable = "probe-rs"
 args = [
-  "attach",
+  "run",
   "--chip", "STM32F407VGTx",
   "--protocol", "swd",
   "--probe", "${KRABI_PROBE}",
+  # Attach with the target held in reset so each chunk starts from a clean core
+  # state; attaching to still-running firmware can fail to clear breakpoints.
+  "--connect-under-reset",
   "--non-interactive",
   "--disable-progressbars",
   "--no-location",
@@ -30,16 +33,6 @@ completion-action = "interrupt"
 timeout-seconds = 900
 target-dir = "target"
 artifact-extension = ""
-
-[[profiles.jtrace-f407-168mhz.prepare]]
-executable = "probe-rs"
-args = ["download", "--chip", "STM32F407VGTx", "--protocol", "swd", "--probe", "${KRABI_PROBE}", "--non-interactive", "--disable-progressbars", "{artifact}"]
-timeout-seconds = 120
-
-[[profiles.jtrace-f407-168mhz.prepare]]
-executable = "probe-rs"
-args = ["reset", "--chip", "STM32F407VGTx", "--protocol", "swd", "--probe", "${KRABI_PROBE}", "--non-interactive", "--connect-under-reset"]
-timeout-seconds = 30
 
 # ── 30 MHz, 0 wait states: the deterministic CT gate ─────────────────
 # 0 WS => no ART prefetch/I-cache, so core-cycle counts carry no fetch jitter
@@ -55,10 +48,11 @@ probe = "${KRABI_PROBE}"
 clock-frequency-hz = 30000000
 executable = "probe-rs"
 args = [
-  "attach",
+  "run",
   "--chip", "STM32F407VGTx",
   "--protocol", "swd",
   "--probe", "${KRABI_PROBE}",
+  "--connect-under-reset",
   "--non-interactive",
   "--disable-progressbars",
   "--no-location",
@@ -69,16 +63,6 @@ completion-action = "interrupt"
 timeout-seconds = 600
 target-dir = "target"
 artifact-extension = ""
-
-[[profiles.jtrace-f407-30mhz-0ws.prepare]]
-executable = "probe-rs"
-args = ["download", "--chip", "STM32F407VGTx", "--protocol", "swd", "--probe", "${KRABI_PROBE}", "--non-interactive", "--disable-progressbars", "{artifact}"]
-timeout-seconds = 120
-
-[[profiles.jtrace-f407-30mhz-0ws.prepare]]
-executable = "probe-rs"
-args = ["reset", "--chip", "STM32F407VGTx", "--protocol", "swd", "--probe", "${KRABI_PROBE}", "--non-interactive", "--connect-under-reset"]
-timeout-seconds = 30
 
 # ── CT gate: u32x8 at 30 MHz, all four fixtures, tight spread ────────
 [[case-sets.krabiecdsa-ct-30mhz]]
