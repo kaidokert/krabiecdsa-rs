@@ -16,6 +16,8 @@ use krabiecdsa::const_num_traits::Ct;
 use krabiecdsa::dangerous::{SigningKey, derive_nonce_rfc6979_ct, sign_prehashed_ct_with_k};
 use krabiecdsa::p256::{self, P256};
 use sha2::Sha256;
+use stm32f4xx_hal::pac;
+use stm32f4xx_hal::prelude::*;
 
 const TRIALS: usize = 4;
 const MAX_POSITIVE_SPREAD: u64 = 32;
@@ -48,12 +50,13 @@ const FIXED_K: [u8; 32] = [
     0x3b, 0x17, 0xaa, 0x87, 0x33, 0x82, 0xb0, 0xf2, 0x4d, 0x61, 0x29, 0x49, 0x3d, 0x8a, 0xad, 0x60,
 ];
 
-// The rig runs at the reset default (HSI, 16 MHz): no PLL, so flash needs zero
-// wait states and the DWT cycle counter carries no wait-state jitter. Running
-// bare (no HAL) is what keeps this crate off `stm32f4xx-hal`'s `time`/MSRV pull
-// and makes the measured cycle counts clean.
-const CLOCK_PROFILE: &str = "reset-hsi-16mhz";
-const HCLK_HZ: u32 = 16_000_000;
+// 30 MHz is the F407's 0-wait-state flash ceiling. At 0 WS the core-cycle
+// counts are frequency-independent and free of flash-prefetch jitter, so the
+// spread/overlap gate holds while wall time roughly halves versus the 16 MHz
+// reset clock. Higher clocks need wait states + the ART prefetch, whose cache
+// jitter widens the positive spread past the gate.
+const CLOCK_PROFILE: &str = "hsi-pll-30mhz";
+const HCLK_HZ: u32 = 30_000_000;
 
 fn paint_stack() -> StackProbe<'static> {
     // SAFETY: cortex-m-rt owns the single stack described by its linker symbols.
@@ -145,6 +148,12 @@ fn main() -> ! {
     let mut reporter = krabi_caliper::protocol::rtt::init_ct_compatible();
     let hclk_hz = HCLK_HZ;
     let mut peripherals = cortex_m::Peripherals::take().unwrap();
+    // Program the RCC for a 30 MHz sysclk before enabling the cycle counter.
+    // `sysclk == hclk` here; the HAL sets flash wait states for the clock
+    // (0 WS at 30 MHz). PLL is HSI-sourced, so reported time is ±1% while the
+    // cycle-count verdict stays exact.
+    let dp = pac::Peripherals::take().unwrap();
+    let _clocks = dp.RCC.constrain().cfgr.sysclk(30.MHz()).freeze();
     let mut platform = DwtMeasurementPlatform::enable(
         &mut peripherals.DCB,
         &mut peripherals.DWT,

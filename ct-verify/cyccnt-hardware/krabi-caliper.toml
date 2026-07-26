@@ -5,13 +5,16 @@ board = "jtrace-reference-board"
 mcu = "STM32F407VG"
 transport = "rtt"
 probe = "${KRABI_PROBE}"
-clock-frequency-hz = 16000000
+clock-frequency-hz = 30000000
 executable = "probe-rs"
 args = [
   "run",
   "--chip", "STM32F407VGTx",
   "--protocol", "swd",
   "--probe", "${KRABI_PROBE}",
+  # Attach with the target held in reset so each attach starts from a clean core
+  # state; attaching to still-running firmware can fail to clear breakpoints.
+  "--connect-under-reset",
   "--non-interactive",
   "--disable-progressbars",
   "--no-location",
@@ -19,7 +22,9 @@ args = [
 ]
 completion-marker = "EM_SUMMARY"
 completion-action = "interrupt"
-timeout-seconds = 120
+# Whole ECDSA signs are ~120M cycles each; at 30 MHz the full single-session
+# suite runs longer than the fast-bignum template's 120 s.
+timeout-seconds = 300
 target-dir = "target"
 artifact-extension = ""
 

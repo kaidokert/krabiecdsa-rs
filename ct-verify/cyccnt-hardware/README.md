@@ -2,10 +2,12 @@
 
 Runs the experimental P-256 signer's constant-time layers on the J-Trace
 STM32F407VG and checks that two independent private scalars produce
-indistinguishable cycle counts. The board runs at its reset default (HSI,
-16 MHz) — no PLL, so flash needs zero wait states and the DWT cycle counter
-carries no wait-state jitter. Running bare (no `stm32f4xx-hal`) keeps the crate
-off that HAL's `time`/MSRV pull.
+indistinguishable cycle counts. The RCC is programmed (via `stm32f4xx-hal`) to a
+30 MHz HSI-sourced sysclk — the F407's **0-wait-state flash ceiling**. At 0 WS
+the core-cycle counts are frequency-independent and free of flash-prefetch
+jitter (so the spread gate holds), while wall time roughly halves versus the
+16 MHz reset clock. Higher clocks need wait states + the ART prefetch, whose
+cache jitter widens the spread past the gate.
 
 Both scalars are copied into the same stack slot before measurement (no
 address/alignment bias between the A and B classes), and preflight derives each
@@ -60,7 +62,7 @@ artifacts). Post-constant-time-derivation the expectation is `passed:4
 failed:0`: all three signing layers — including `rfc6979_nonce` — hold constant
 across keys, and only `negative_early_exit` separates. (The earlier 168 MHz
 run that recorded `rfc6979_nonce`/`signing_key_rfc6979` as FAIL predates the CT
-derivation and the move to the bare 16 MHz clock; it no longer applies.)
+derivation and the 30 MHz 0-wait-state clock; it no longer applies.)
 
 CYCCNT is timing-regression evidence, not proof of identical instruction or
 memory traces — it complements, and does not replace, the ctgrind taint gate
