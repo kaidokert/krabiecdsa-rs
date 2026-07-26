@@ -95,12 +95,20 @@ const FIXED_K: [u8; 32] = [
     0x3b, 0x17, 0xaa, 0x87, 0x33, 0x82, 0xb0, 0xf2, 0x4d, 0x61, 0x29, 0x49, 0x3d, 0x8a, 0xad, 0x60,
 ];
 
-// 30 MHz is the F407's 0-wait-state flash ceiling. At 0 WS the core-cycle
-// counts are frequency-independent and free of flash-prefetch jitter, so the
-// spread gate holds while wall time roughly halves versus the 16 MHz reset
-// clock. Higher clocks need wait states + the ART prefetch, whose cache jitter
-// widens the positive spread past the gate.
-const CLOCK_PROFILE: &str = "hsi-pll-30mhz";
+// Two clock tiers, selected by build feature:
+//  - clock-30mhz (default): the F407's 0-wait-state flash ceiling. At 0 WS the
+//    core-cycle counts carry no fetch jitter, so the tight spread gate holds —
+//    the deterministic CT-verdict tier.
+//  - clock-168mhz: needs wait states + the ART prefetch (jitter), but ~5.6x the
+//    wall-clock throughput — the functional-smoke tier for the slow carriers,
+//    whose signs would time out at 30 MHz.
+#[cfg(feature = "clock-168mhz")]
+const CLOCK_PROFILE: &str = "hsi-pll-168mhz";
+#[cfg(feature = "clock-168mhz")]
+const HCLK_HZ: u32 = 168_000_000;
+#[cfg(not(feature = "clock-168mhz"))]
+const CLOCK_PROFILE: &str = "hsi-pll-30mhz-0ws";
+#[cfg(not(feature = "clock-168mhz"))]
 const HCLK_HZ: u32 = 30_000_000;
 
 fn paint_stack() -> StackProbe<'static> {
@@ -206,12 +214,17 @@ fn main() -> ! {
     let mut reporter = krabi_caliper::protocol::rtt::init_ct_compatible();
     let hclk_hz = HCLK_HZ;
     let mut peripherals = cortex_m::Peripherals::take().unwrap();
-    // Program the RCC for a 30 MHz sysclk before enabling the cycle counter.
-    // `sysclk == hclk` here; the HAL sets flash wait states for the clock
-    // (0 WS at 30 MHz). PLL is HSI-sourced, so reported time is ±1% while the
-    // cycle-count verdict stays exact.
+    // Program the RCC for the selected sysclk before enabling the cycle
+    // counter. `sysclk == hclk` here; the HAL sets flash wait states for the
+    // clock (0 WS at 30 MHz, wait states at 168). PLL is HSI-sourced, so
+    // reported time is ±1% while the cycle-count verdict stays exact.
     let dp = pac::Peripherals::take().unwrap();
-    let _clocks = dp.RCC.constrain().cfgr.sysclk(30.MHz()).freeze();
+    let _clocks = dp
+        .RCC
+        .constrain()
+        .cfgr
+        .sysclk((HCLK_HZ / 1_000_000).MHz())
+        .freeze();
     let mut platform = DwtMeasurementPlatform::enable(
         &mut peripherals.DCB,
         &mut peripherals.DWT,

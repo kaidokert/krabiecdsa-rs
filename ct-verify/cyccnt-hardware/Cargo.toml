@@ -13,7 +13,7 @@ publish = false
 # The default lets a bare `cargo run` build; the campaign passes
 # `--no-default-features` plus one explicit carrier + fixture per attachment, so
 # the per-chunk builds never collide.
-default = ["carrier-u32x8", "fix-wholesign"]
+default = ["carrier-u32x8", "fix-wholesign", "clock-30mhz"]
 carrier-u32x8 = []
 carrier-u8x32 = []
 carrier-u64x4 = []
@@ -21,6 +21,11 @@ fix-nonce = []
 fix-fixedsign = []
 fix-wholesign = []
 fix-keygen = []
+# Clock tier (see main.rs). clock-30mhz is the 0-wait-state deterministic
+# CT-verdict regime; clock-168mhz trades fetch jitter for ~5.6x throughput on
+# the slow carriers. Exactly one is set via the profile's build-features.
+clock-30mhz = []
+clock-168mhz = []
 
 [dependencies]
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }

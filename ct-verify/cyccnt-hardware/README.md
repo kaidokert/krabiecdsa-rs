@@ -2,32 +2,37 @@
 
 Runs the experimental P-256 signer's constant-time layers on the J-Trace
 STM32F407VG and checks that two independent private scalars produce
-indistinguishable cycle counts. The RCC is programmed (via `stm32f4xx-hal`) to a
-30 MHz HSI-sourced sysclk — the F407's **0-wait-state flash ceiling**. At 0 WS
-the core-cycle counts are frequency-independent and free of flash-prefetch
-jitter (so the spread gate holds), while wall time roughly halves versus the
-16 MHz reset clock. Higher clocks need wait states + the ART prefetch, whose
-cache jitter widens the spread past the gate.
+indistinguishable cycle counts.
 
 Both scalars are copied into the same stack slot before measurement (no
 address/alignment bias between the A and B classes), and preflight derives each
 public key, signs the common digest, and verifies before any timing evidence is
-accepted.
+accepted. Four trials per key run in balanced ABBA order with equal warm-up,
+interrupts masked, DWT barriers, observable outputs, and a 32-cycle
+positive-spread gate.
 
-Four trials per key run in balanced ABBA order with equal warm-up, interrupts
-masked, DWT barriers, observable outputs, and a 32-cycle positive-spread gate.
+## Two clock tiers (coverage vs. speed)
 
-## Fixtures and chunking
+The whole-signer is ~120M cycles; running every carrier at 30 MHz would take
+~½ hour and time out. So, following the RSA/ed25519 pattern, the CT verdict is
+taken at one representative carrier under the deterministic clock, and the slow
+carrier runs faster as functional smoke — together ~15 min:
 
-The campaign runs each **(carrier, fixture)** pair as its own probe-rs session —
-12 chunks in all — so cross-fixture probe/bus state can't perturb a later
-fixture's first timed samples. Each chunk builds one carrier + one fixture
-(`--no-default-features` + `carrier-*` + `fix-*`) and includes the negative
-control, so every attachment is independently trustworthy.
+- **CT gate — `u32x8` at 30 MHz / 0 wait states.** 0 WS means no ART
+  prefetch/I-cache, so core-cycle counts carry no fetch jitter and the tight
+  32-cycle spread gate holds; determinism makes a small sample count valid.
+  The real gate.
+- **Smoke — `u8x32` (byte limb) at 168 MHz, `gate = false`.** The byte-limb
+  sign is ~10× u32x8 and would time out at 30 MHz; 168 MHz keeps wall time
+  bounded. Not a CT gate — u8x32's constant-time property is proven at the
+  instruction level by ctgrind + the asm-ladder audit; this confirms it signs
+  on hardware and captures rough timing.
 
-Three carriers (the same widths the ctgrind matrix covers): `u32x8` (native ARM
-word), `u8x32` (AVR-class byte limb), `u64x4` (double-word, emulated on the
-32-bit M4).
+Each **(tier, fixture)** pair runs as its own probe-rs session (build:
+`--no-default-features` + one `carrier-*` + one `clock-*` + one `fix-*`), so
+cross-fixture probe/bus state can't perturb a later fixture's first samples.
+Every chunk includes the negative control, so each attachment is independently
+trustworthy.
 
 Four protected positives (must be constant-time across keys):
 
@@ -50,38 +55,39 @@ the configured HCLK, and the stack high-water mark.
 
 ## Running
 
-The declarative hardware gate (release build, SWD/J-Trace selection, RTT
-completion, retained artifacts) is driven by the campaign runner:
+Two campaigns, one per tier, driven by the campaign runner (each profile owns
+its build, SWD/J-Trace selection, RTT completion, and per-case timeouts):
 
 ```sh
-cargo krabi-caliper run krabiecdsa-jtrace-f407
+cargo krabi-caliper run krabiecdsa-ct-jtrace-f407-30mhz      # CT gate (u32x8, 30 MHz)
+cargo krabi-caliper run krabiecdsa-smoke-jtrace-f407-168mhz  # smoke (u8x32, 168 MHz)
 ```
 
-The profile in `krabi-caliper.toml` owns the probe binding (`${KRABI_PROBE}`,
-supplied by the bench, never committed) and writes JSON/Markdown results on the
-bench under `target/krabi-caliper/krabiecdsa-jtrace-f407/`. CI runs it on pushes
-to `main` and pull requests via `.github/workflows/hw-ct.yml` on a self-hosted
-`rig-stm32f407-dwt` bench. To
-troubleshoot one chunk outside the runner (the default is `carrier-u32x8` +
-`fix-wholesign`; pick another with `--no-default-features`):
+The profiles own the probe binding (`${KRABI_PROBE}`, supplied by the bench,
+never committed) and write JSON/Markdown results on the bench under
+`target/krabi-caliper/…`. CI runs both on pushes to `main` and pull requests via
+`.github/workflows/hw-ct.yml` on a self-hosted `rig-stm32f407-dwt` bench. To
+troubleshoot one chunk outside the runner (the default build is `carrier-u32x8`
++ `clock-30mhz` + `fix-wholesign`; pick another with `--no-default-features`):
 
 ```sh
 cargo run --release
-cargo run --release --no-default-features --features carrier-u8x32,fix-nonce
+cargo run --release --no-default-features --features carrier-u8x32,clock-168mhz,fix-nonce
 ```
 
 ## Results
 
-Pending the first post-constant-time-derivation bench run — the campaign writes
+Pending the first post-constant-time-derivation bench run — each campaign writes
 an `EM_SUMMARY` per chunk to `target/krabi-caliper/…` on the bench. The expected
-outcome across all 12 chunks is that every protected positive — including
-`rfc6979_nonce` — holds constant across keys while `negative_early_exit`
-separates in each chunk; the numbers here will be filled in once a run's
-retained output substantiates it. (The earlier 168 MHz run that recorded
-`rfc6979_nonce`/`signing_key_rfc6979` as FAIL predates the CT derivation and the
-30 MHz 0-wait-state clock; it no longer applies.) The campaign is report-only
-(`gate = false`) for the first baseline; flip it to `gate = true` (matching
-ed25519) once a run confirms all-pass.
+outcome: at 30 MHz every u32x8 positive — including `rfc6979_nonce` — holds
+constant across keys while `negative_early_exit` separates; the 168 MHz u8x32
+smoke confirms it signs and captures rough timing (jitter is expected there, so
+it isn't gated). The numbers here will be filled in once a run's retained output
+substantiates it. (The earlier 168 MHz run that recorded
+`rfc6979_nonce`/`signing_key_rfc6979` as FAIL predates the CT derivation; it no
+longer applies.) Both tiers are report-only (`gate = false`) for the first
+baseline; flip the **30 MHz CT gate** to `gate = true` (matching ed25519/RSA)
+once a run confirms all-pass — the 168 MHz smoke stays `gate = false` by design.
 
 CYCCNT is timing-regression evidence, not proof of identical instruction or
 memory traces — it complements, and does not replace, the ctgrind taint gate
