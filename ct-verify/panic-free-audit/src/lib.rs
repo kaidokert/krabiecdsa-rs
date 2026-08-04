@@ -9,8 +9,9 @@
 //! panic-formatting path's cost depends on the values being formatted).
 //!
 //! Scope matches the taint/asm gates: `sign_prehashed_ct_with_k` by
-//! default, and the whole `sign_prehashed_ct` under the `deterministic`
-//! feature.
+//! default, and the whole `sign_prehashed_ct` plus the hedged
+//! `sign_prehashed_ct_hedged` (RFC 6979 §3.6 additional data) under the
+//! `deterministic` feature.
 
 #![cfg_attr(feature = "panic-handler", no_std)]
 
@@ -27,7 +28,7 @@ use krabiecdsa::p384::P384;
 #[cfg(feature = "deterministic")]
 use hmac::Hmac;
 #[cfg(feature = "deterministic")]
-use krabiecdsa::dangerous::sign_prehashed_ct;
+use krabiecdsa::dangerous::{sign_prehashed_ct, sign_prehashed_ct_hedged};
 #[cfg(feature = "deterministic")]
 use sha2::{Sha256, Sha384};
 
@@ -121,6 +122,40 @@ panic_audit_det_fixture!(panic_audit__ecdsa_sign_det_p256__fb32, P256, FixedUInt
 panic_audit_det_fixture!(panic_audit__ecdsa_sign_det_p256__fb8, P256, FixedUInt<u8, 32, Ct>, Hmac<Sha256>, 32, D256, DIGEST256);
 #[cfg(feature = "deterministic")]
 panic_audit_det_fixture!(panic_audit__ecdsa_sign_det_p384__fb32, P384, FixedUInt<u32, 12, Ct>, Hmac<Sha384>, 48, D384, DIGEST384);
+
+// Hedged deterministic sign (§3.6 additional data). Same crate-owned scope
+// as the plain deterministic leg — the §3.6 plumbing is krabiecdsa-owned,
+// while the upstream hmac/sha2 block buffering stays out of scope.
+#[cfg(feature = "deterministic")]
+macro_rules! panic_audit_hedged_fixture {
+    ($name:ident, $curve:ty, $carrier:ty, $mac:ty, $bytes:literal, $d:expr, $digest:expr) => {
+        /// # Safety
+        /// `out_ptr` must be a valid pointer to a writable byte.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(out_ptr: *mut u8) {
+            let d = black_box($d);
+            let digest = black_box($digest);
+            let added = black_box([0x5au8; 32]);
+            let mut r = [0u8; $bytes];
+            let mut s = [0u8; $bytes];
+            let ok = sign_prehashed_ct_hedged::<$curve, $carrier, $mac>(
+                &d[..],
+                &digest[..],
+                &added[..],
+                &mut r,
+                &mut s,
+            );
+            black_box(&r);
+            black_box(&s);
+            unsafe { *out_ptr = black_box(ok as u8) }
+        }
+    };
+}
+
+#[cfg(feature = "deterministic")]
+panic_audit_hedged_fixture!(panic_audit__ecdsa_sign_hedged_p256__fb32, P256, FixedUInt<u32, 8, Ct>, Hmac<Sha256>, 32, D256, DIGEST256);
+#[cfg(feature = "deterministic")]
+panic_audit_hedged_fixture!(panic_audit__ecdsa_sign_hedged_p384__fb32, P384, FixedUInt<u32, 12, Ct>, Hmac<Sha384>, 48, D384, DIGEST384);
 
 #[cfg(feature = "panic-handler")]
 #[panic_handler]
