@@ -19,12 +19,12 @@ digest = { version = "0.10", default-features = false, features = ["mac"], optio
 subtle = { version = "2.6", default-features = false }
 
 [features]
-# EXPERIMENTAL, off by default: proof-of-concept ECDSA signing (see the
-# `dangerous` module). Not covered by semver and not for production use
-# — the name stays `experimental-` until the sign path is constant-time,
-# RFC 6979-deterministic, and audited. The no-feature build carries none
-# of it and stays verify-only.
-experimental-signing = ["dep:digest"]
+# EXPERIMENTAL, off by default: ECDSA signing (see the `dangerous` module).
+# Not covered by semver and not for production use. The sign path is now
+# constant-time and RFC 6979-deterministic; the name stays `experimental-`
+# until it is independently audited. The no-feature build carries none of it
+# and stays verify-only.
+experimental-signing = ["dep:digest", "signature/rand_core"]
 
 [dev-dependencies]
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["cios", "zeroize"] }

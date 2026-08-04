@@ -425,6 +425,43 @@ macro_rules! define_curve {
                     }
                 }
             }
+
+            /// RustCrypto randomized signer: draws fresh entropy from
+            /// `rng`, hedges the RFC 6979 nonce with it (§3.6), and runs a
+            /// verify-after-sign fault check before returning the P1363
+            /// `r || s`. Requires `signature`'s `rand_core` feature, which
+            /// `experimental-signing` enables. Experimental — see
+            /// [`dangerous`](crate::dangerous).
+            #[cfg(feature = "experimental-signing")]
+            impl<Tct, Tv, M> signature::hazmat::RandomizedPrehashSigner<[u8; 2 * $eb]>
+                for crate::dangerous::RandomizedSigningKey<$marker, Tct, Tv, M>
+            where
+                Tct: crate::dangerous::ConstantTimeInt,
+                Tv: FieldFor + ScalarBytes,
+                M: digest::KeyInit + digest::Mac,
+            {
+                fn sign_prehash_with_rng<R: signature::rand_core::TryCryptoRng + ?Sized>(
+                    &self,
+                    rng: &mut R,
+                    prehash: &[u8],
+                ) -> Result<[u8; 2 * $eb], signature::Error> {
+                    // 256 bits of hedge entropy, wiped after use. A weak or
+                    // all-zero draw degrades to RFC 6979 determinism, never
+                    // to nonce reuse (key + digest still seed the DRBG), so
+                    // a failing RNG can't be catastrophic — but it must not
+                    // panic, hence the fallible fill mapped to an error.
+                    let mut z = zeroize::Zeroizing::new([0u8; 32]);
+                    signature::rand_core::TryRng::try_fill_bytes(rng, &mut z[..])
+                        .map_err(|_| signature::Error::new())?;
+                    let mut sig = [0u8; 2 * $eb];
+                    let (r, s) = sig.split_at_mut($eb);
+                    if self.sign_prehashed_hedged(&z[..], prehash, r, s) {
+                        Ok(sig)
+                    } else {
+                        Err(signature::Error::new())
+                    }
+                }
+            }
         }
     };
 }
@@ -891,21 +928,39 @@ where
 /// real keys.**
 ///
 /// Off by default behind the `experimental-signing` cargo feature and
-/// gated behind this deliberately-named module.
-/// [`dangerous::sign_prehashed`] derives its nonce deterministically
-/// per RFC 6979 — no reuse or bias; [`dangerous::sign_prehashed_with_k`]
-/// is the lower primitive that still takes a caller `k`.
+/// gated behind this deliberately-named module. Two families live here:
 ///
-/// What still keeps this out of production:
+/// - **Variable-time POC** — [`dangerous::sign_prehashed`] (RFC 6979
+///   deterministic) and [`dangerous::sign_prehashed_with_k`] (caller
+///   `k`). These run on the non-constant-time (`Nct`) modmath surface
+///   and leak the secret scalar and nonce through timing; correctness
+///   demonstrators only.
+/// - **Constant-time** — [`dangerous::sign_prehashed_ct`],
+///   [`dangerous::SigningKey`], [`dangerous::PrehashSigningKey`], and the
+///   hedged [`dangerous::RandomizedSigningKey`]. The secret operations
+///   run on the `Ct` surface (RCB complete formulas, branch-free ladder,
+///   Fermat inverse), constant-time up to RFC 6979's inherent
+///   rejection-loop count.
 ///
-/// - **The arithmetic is variable-time.** It runs on the
-///   non-constant-time (`Nct`) modmath surface, so the secret scalar
-///   and nonce leak through timing. A shippable signer runs the secret
-///   operations on the `Ct` surface.
-/// - **Unaudited.** Correctness is pinned to RFC 6979 fixed vectors;
-///   that is not a constant-time review.
+/// The constant-time guarantee is **timing only**. It does NOT cover:
 ///
-/// Until those are addressed, this is a correctness demonstrator only.
+/// - **Power / EM side channels (DPA/CPA).** There is no scalar blinding
+///   or projective-coordinate randomization, so a physical attacker with
+///   trace access is not defended. [`dangerous::RandomizedSigningKey`]
+///   hedges the nonce (fresh entropy per signature, RFC 6979 §3.6) and
+///   runs a verify-after-sign fault check — defeating same-message trace
+///   averaging and the deterministic-ECDSA fault break — but that is
+///   defense-in-depth, not DPA resistance.
+/// - **Comprehensive fault attacks.** Only the randomized path
+///   re-verifies its own output.
+///
+/// And, gating everything:
+///
+/// - **Unaudited.** Correctness is pinned to RFC 6979 fixed vectors and
+///   the timing property to the ct-verify harness; neither is a physical
+///   side-channel evaluation.
+///
+/// Until an audit says otherwise, this stays behind the feature gate.
 #[cfg(feature = "experimental-signing")]
 pub mod dangerous {
     use super::*;
@@ -1122,6 +1177,12 @@ pub mod dangerous {
     fn rfc6979_nonce<C: Curve, T: ScalarBytes, M: digest::KeyInit + digest::Mac>(
         x_octets: &[u8],
         h1_octets: &[u8],
+        // RFC 6979 §3.6 additional data, appended to the two DRBG seeding
+        // HMACs. Empty for the pure-deterministic derivation (yields the
+        // RFC's `k` byte-for-byte); the hedged signer passes fresh entropy
+        // here so repeated signatures over one message differ. Public, not
+        // secret — the DRBG stays data-oblivious either way.
+        added: &[u8],
         n: &T,
         qlen: usize,
         // Candidate acceptance test `1 <= cand < n`, supplied by the
@@ -1151,19 +1212,19 @@ pub mod dangerous {
             copy_prefix(v, scratch.get(..hlen)?)
         };
 
-        // K = HMAC_K(V || 0x00 || x || h1); V = HMAC_K(V)
+        // K = HMAC_K(V || 0x00 || x || h1 || added); V = HMAC_K(V)
         copy_prefix(&mut scratch[..], k.get(..hlen)?)?;
         hmac_into::<M>(
             scratch.get(..hlen)?,
-            &[v.get(..hlen)?, &[0x00], x_octets, h1_octets],
+            &[v.get(..hlen)?, &[0x00], x_octets, h1_octets, added],
             &mut k[..],
         )?;
         update_v(k.get(..hlen)?, &mut v[..], &mut scratch[..])?;
-        // K = HMAC_K(V || 0x01 || x || h1); V = HMAC_K(V)
+        // K = HMAC_K(V || 0x01 || x || h1 || added); V = HMAC_K(V)
         copy_prefix(&mut scratch[..], k.get(..hlen)?)?;
         hmac_into::<M>(
             scratch.get(..hlen)?,
-            &[v.get(..hlen)?, &[0x01], x_octets, h1_octets],
+            &[v.get(..hlen)?, &[0x01], x_octets, h1_octets, added],
             &mut k[..],
         )?;
         update_v(k.get(..hlen)?, &mut v[..], &mut scratch[..])?;
@@ -1230,9 +1291,11 @@ pub mod dangerous {
         let e = fn_.into_raw(&fn_.reduce(&hash_to_scalar::<T>(digest, qlen)));
         to_be::<T>(&e, &mut h1[..eb]);
 
-        let Some(mut k) = rfc6979_nonce::<C, T, M>(private_key, &h1[..eb], &n, qlen, |cand, n| {
-            *cand != T::zero() && lt(cand, n)
-        }) else {
+        let Some(mut k) =
+            rfc6979_nonce::<C, T, M>(private_key, &h1[..eb], &[], &n, qlen, |cand, n| {
+                *cand != T::zero() && lt(cand, n)
+            })
+        else {
             return false;
         };
         to_be::<T>(&k, out_k);
@@ -1260,6 +1323,24 @@ pub mod dangerous {
     >(
         private_key: &[u8],
         digest: &[u8],
+        out_k: &mut [u8],
+    ) -> bool {
+        derive_nonce_rfc6979_ct_added::<C, Tct, M>(private_key, digest, &[], out_k)
+    }
+
+    /// Hedged variant of [`derive_nonce_rfc6979_ct`]: `added` is RFC 6979
+    /// §3.6 additional data (fresh entropy) mixed into the DRBG seed, so
+    /// the derived `k` varies per call while the derivation stays
+    /// constant-time. With `added` empty this reproduces
+    /// [`derive_nonce_rfc6979_ct`] byte-for-byte.
+    fn derive_nonce_rfc6979_ct_added<
+        C: Curve,
+        Tct: ConstantTimeInt,
+        M: digest::KeyInit + digest::Mac,
+    >(
+        private_key: &[u8],
+        digest: &[u8],
+        added: &[u8],
         out_k: &mut [u8],
     ) -> bool {
         const {
@@ -1300,7 +1381,7 @@ pub mod dangerous {
         };
 
         let Some(mut k) =
-            rfc6979_nonce::<C, Tct, M>(private_key, h1_octets, &n, qlen, |cand, n| {
+            rfc6979_nonce::<C, Tct, M>(private_key, h1_octets, added, &n, qlen, |cand, n| {
                 bool::from(!cand.ct_is_zero() & cand.ct_lt(n))
             })
         else {
@@ -1639,16 +1720,106 @@ pub mod dangerous {
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
+        sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, &[], out_r, out_s)
+    }
+
+    /// **Hedged** constant-time ECDSA signing: identical to
+    /// [`sign_prehashed_ct`] but mixes `added` (fresh entropy) into the
+    /// RFC 6979 nonce per §3.6, so repeated signatures over the same
+    /// `(private_key, digest)` differ. This keeps RFC 6979's
+    /// no-catastrophic-RNG-failure property — a weak or empty `added`
+    /// degrades to the deterministic nonce, never to nonce reuse — while
+    /// adding the per-signature variability that defeats same-message
+    /// trace averaging and the deterministic-ECDSA fault break. The
+    /// entropy is public (not secret), so the derivation stays
+    /// constant-time.
+    ///
+    /// Experimental — see the [module warning](self).
+    #[must_use]
+    pub fn sign_prehashed_ct_hedged<
+        C: Curve,
+        Tct: ConstantTimeInt,
+        M: digest::KeyInit + digest::Mac,
+    >(
+        private_key: &[u8],
+        digest: &[u8],
+        added: &[u8],
+        out_r: &mut [u8],
+        out_s: &mut [u8],
+    ) -> bool {
+        sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, added, out_r, out_s)
+    }
+
+    fn sign_prehashed_ct_added<C: Curve, Tct: ConstantTimeInt, M: digest::KeyInit + digest::Mac>(
+        private_key: &[u8],
+        digest: &[u8],
+        added: &[u8],
+        out_r: &mut [u8],
+        out_s: &mut [u8],
+    ) -> bool {
         let eb = C::ELEM_BYTES;
         let mut k = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
         // Both halves run unconditionally and their validity bools combine
         // branch-free. The derivation returns a *tainted* validity bool
         // (folded from the secret key), so branching on it would just move
         // the leak up into this frame; `&` keeps it branch-free.
-        let derived = derive_nonce_rfc6979_ct::<C, Tct, M>(private_key, digest, &mut k[..eb]);
+        let derived =
+            derive_nonce_rfc6979_ct_added::<C, Tct, M>(private_key, digest, added, &mut k[..eb]);
         let signed =
             sign_prehashed_ct_with_k::<C, Tct>(private_key, digest, &k[..eb], out_r, out_s);
         derived & signed
+    }
+
+    /// Hedged constant-time sign **with a verify-after-sign fault check**.
+    /// Signs via [`sign_prehashed_ct_hedged`], then recomputes the public
+    /// key `d·G` (constant-time, backend `Tct`) and verifies the fresh
+    /// `(r, s)` through the variable-time verify path (backend `Tv`)
+    /// before accepting. A computational fault in the signature math is
+    /// caught here; on any failure the outputs are zeroed and `false` is
+    /// returned, so a faulted signature is never released.
+    ///
+    /// The verify runs variable-time, which is sound: `(r, s)`, the
+    /// digest, and the public key are all public the instant the
+    /// signature is emitted. `Tv` is an ordinary (non-Ct) verify backend
+    /// (`FieldFor + ScalarBytes`), distinct from the Ct signing backend
+    /// `Tct`.
+    ///
+    /// Experimental — see the [module warning](self).
+    #[must_use]
+    pub fn sign_prehashed_ct_hedged_verified<
+        C: Curve,
+        Tct: ConstantTimeInt,
+        Tv: FieldFor + ScalarBytes,
+        M: digest::KeyInit + digest::Mac,
+    >(
+        private_key: &[u8],
+        digest: &[u8],
+        added: &[u8],
+        out_r: &mut [u8],
+        out_s: &mut [u8],
+    ) -> bool {
+        let eb = C::ELEM_BYTES;
+        if out_r.len() != eb || out_s.len() != eb {
+            return false;
+        }
+        let signed = sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, added, out_r, out_s);
+
+        // Recompute Q = d·G and verify (r, s); a fault in the sign math
+        // fails this check. Q is derived fresh from the same key so no
+        // caller-supplied public key can mask a mismatch.
+        let mut pubkey = [0u8; 1 + 2 * MAX_ELEM];
+        let pk = &mut pubkey[..1 + 2 * eb];
+        let q_ok = SigningKey::<C>::from_bytes(private_key)
+            .is_some_and(|sk| sk.verifying_key_sec1::<Tct>(pk));
+        let verified = q_ok && verify_for_curve::<C, Tv>(pk, digest, out_r, out_s);
+
+        if !(signed && verified) {
+            // Never release a signature that failed the fault check.
+            out_r.iter_mut().for_each(|b| *b = 0);
+            out_s.iter_mut().for_each(|b| *b = 0);
+            return false;
+        }
+        true
     }
 
     /// Affine `(X/Z, Y/Z)` (RCB projective), or `None` at the
@@ -1768,6 +1939,10 @@ pub mod dangerous {
     /// struct field readable.
     type BackendMarker<Tct, M> = core::marker::PhantomData<fn() -> (Tct, M)>;
 
+    /// Three-backend marker (Ct sign / vartime verify / HMAC) for the
+    /// randomized signer — same purpose as [`BackendMarker`].
+    type RandBackendMarker<Tct, Tv, M> = core::marker::PhantomData<fn() -> (Tct, Tv, M)>;
+
     /// A [`SigningKey`] with its backend and HMAC bound, so it can
     /// carry the RustCrypto `signature::hazmat::PrehashSigner` impl
     /// (which has no room for per-call type parameters). The impl is
@@ -1812,6 +1987,73 @@ pub mod dangerous {
         #[must_use]
         pub fn sign_prehashed(&self, digest: &[u8], out_r: &mut [u8], out_s: &mut [u8]) -> bool {
             self.key.sign_prehashed::<Tct, M>(digest, out_r, out_s)
+        }
+
+        /// Derive the SEC1 public key (see
+        /// [`SigningKey::verifying_key_sec1`]).
+        #[must_use]
+        pub fn verifying_key_sec1(&self, out: &mut [u8]) -> bool {
+            self.key.verifying_key_sec1::<Tct>(out)
+        }
+    }
+
+    /// A [`SigningKey`] bound to a Ct signing backend `Tct`, a
+    /// variable-time verify backend `Tv`, and an HMAC `M`, carrying the
+    /// RustCrypto [`signature::hazmat::RandomizedPrehashSigner`] impl.
+    /// Its sign path is **hedged** (fresh entropy folded into the RFC
+    /// 6979 nonce, §3.6) and **verify-after-sign** fault-checked — the
+    /// hardened counterpart to the deterministic [`PrehashSigningKey`].
+    /// `Tv` is a normal (non-Ct) backend, used only for the post-sign
+    /// verification whose inputs are public.
+    ///
+    /// Experimental — see the [module warning](self).
+    pub struct RandomizedSigningKey<C: Curve, Tct, Tv, M> {
+        key: SigningKey<C>,
+        _p: RandBackendMarker<Tct, Tv, M>,
+    }
+
+    impl<
+        C: Curve,
+        Tct: ConstantTimeInt,
+        Tv: FieldFor + ScalarBytes,
+        M: digest::KeyInit + digest::Mac,
+    > RandomizedSigningKey<C, Tct, Tv, M>
+    {
+        /// Wrap a private scalar, rejecting `d ∉ [1, n-1]` eagerly in
+        /// constant time (see [`PrehashSigningKey::from_bytes`]).
+        #[must_use]
+        pub fn from_bytes(private_key: &[u8]) -> Option<Self> {
+            let key = SigningKey::from_bytes(private_key)?;
+            let d = from_be::<Tct>(private_key);
+            let n = from_be::<Tct>(C::N);
+            if !bool::from(!d.ct_is_zero() & d.ct_lt(&n)) {
+                return None;
+            }
+            Some(Self {
+                key,
+                _p: core::marker::PhantomData,
+            })
+        }
+
+        /// Hedged constant-time sign with a verify-after-sign fault check
+        /// (see [`sign_prehashed_ct_hedged_verified`]). `added` is fresh
+        /// entropy — distinct entropy per call makes repeated signatures
+        /// over one digest differ.
+        #[must_use]
+        pub fn sign_prehashed_hedged(
+            &self,
+            added: &[u8],
+            digest: &[u8],
+            out_r: &mut [u8],
+            out_s: &mut [u8],
+        ) -> bool {
+            sign_prehashed_ct_hedged_verified::<C, Tct, Tv, M>(
+                &self.key.d[..C::ELEM_BYTES],
+                digest,
+                added,
+                out_r,
+                out_s,
+            )
         }
 
         /// Derive the SEC1 public key (see
