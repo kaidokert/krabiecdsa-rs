@@ -503,6 +503,90 @@ macro_rules! define_curve {
                     }
                 }
             }
+
+            /// [`signature::DigestSigner`]: hash the message into `D`
+            /// internally (the closure feeds it), then deterministically
+            /// sign the digest. Needs `signature`'s `digest` feature, which
+            /// `experimental-signing` enables.
+            #[cfg(feature = "experimental-signing")]
+            impl<Tct, Tv, M, D> signature::DigestSigner<D, [u8; 2 * $eb]>
+                for crate::dangerous::PrehashSigningKey<$marker, Tct, Tv, M>
+            where
+                D: digest::Digest + digest::Update,
+                Tct: crate::dangerous::ConstantTimeInt,
+                Tv: FieldFor + ScalarBytes,
+                M: digest::KeyInit + digest::Mac,
+            {
+                fn try_sign_digest<F: Fn(&mut D) -> Result<(), signature::Error>>(
+                    &self,
+                    f: F,
+                ) -> Result<[u8; 2 * $eb], signature::Error> {
+                    let mut digest = D::new();
+                    f(&mut digest)?;
+                    let hash = digest.finalize();
+                    let mut sig = [0u8; 2 * $eb];
+                    let (r, s) = sig.split_at_mut($eb);
+                    if self.sign_prehashed(&hash, r, s) {
+                        Ok(sig)
+                    } else {
+                        Err(signature::Error::new())
+                    }
+                }
+            }
+
+            /// [`signature::RandomizedDigestSigner`]: the hedged analogue —
+            /// hash into `D`, then hedged-sign the digest with entropy from
+            /// `rng`.
+            #[cfg(feature = "experimental-signing")]
+            impl<Tct, Tv, M, D> signature::RandomizedDigestSigner<D, [u8; 2 * $eb]>
+                for crate::dangerous::RandomizedSigningKey<$marker, Tct, Tv, M>
+            where
+                D: digest::Digest + digest::Update,
+                Tct: crate::dangerous::ConstantTimeInt,
+                Tv: FieldFor + ScalarBytes,
+                M: digest::KeyInit + digest::Mac,
+            {
+                fn try_sign_digest_with_rng<
+                    R: signature::rand_core::TryCryptoRng + ?Sized,
+                    F: Fn(&mut D) -> Result<(), signature::Error>,
+                >(
+                    &self,
+                    rng: &mut R,
+                    f: F,
+                ) -> Result<[u8; 2 * $eb], signature::Error> {
+                    let mut digest = D::new();
+                    f(&mut digest)?;
+                    let hash = digest.finalize();
+                    <Self as signature::hazmat::RandomizedPrehashSigner<[u8; 2 * $eb]>>::sign_prehash_with_rng(
+                        self, rng, &hash,
+                    )
+                }
+            }
+
+            /// [`signature::DigestVerifier`]: hash the message into `D`
+            /// internally, then verify the P1363 `signature` over the
+            /// digest. Rides the `digest` feature enabled by
+            /// `experimental-signing`.
+            #[cfg(feature = "experimental-signing")]
+            impl<T, D, S> signature::DigestVerifier<D, S> for VerifyingKey<T>
+            where
+                T: FieldFor + ScalarBytes,
+                D: digest::Digest + digest::Update,
+                S: AsRef<[u8]>,
+            {
+                fn verify_digest<F: Fn(&mut D) -> Result<(), signature::Error>>(
+                    &self,
+                    f: F,
+                    signature: &S,
+                ) -> Result<(), signature::Error> {
+                    let mut digest = D::new();
+                    f(&mut digest)?;
+                    let hash = digest.finalize();
+                    <Self as signature::hazmat::PrehashVerifier<S>>::verify_prehash(
+                        self, &hash, signature,
+                    )
+                }
+            }
         }
     };
 }

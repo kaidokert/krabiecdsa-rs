@@ -15,7 +15,7 @@ modmath = "0.6.1"
 const-num-traits = { version = "0.2.1", default-features = false, features = ["ct"] }
 signature = { version = "3.0", default-features = false }
 zeroize = { version = "1", default-features = false }
-digest = { version = "0.10", default-features = false, features = ["mac"], optional = true }
+digest = { version = "0.11", default-features = false, features = ["mac"], optional = true }
 subtle = { version = "2.6", default-features = false }
 
 [features]
@@ -24,7 +24,7 @@ subtle = { version = "2.6", default-features = false }
 # constant-time and RFC 6979-deterministic; the name stays `experimental-`
 # until it is independently audited. The no-feature build carries none of it
 # and stays verify-only.
-experimental-signing = ["dep:digest", "signature/rand_core"]
+experimental-signing = ["dep:digest", "signature/rand_core", "signature/digest"]
 
 [dev-dependencies]
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["cios", "zeroize"] }
@@ -32,7 +32,7 @@ fixed-bigint = { version = "0.6.0", default-features = false, features = ["cios"
 # test; pinned to modmath's tag so it unifies to one `FixedWidthBigUint`.
 num-bigint = { git = "https://github.com/kaidokert/num-bigint.git", tag = "v0.4.4-const-12" }
 signature = { version = "3.0", default-features = false }
-sha2 = "0.10"
-hmac = "0.12"
-digest = { version = "0.10", features = ["mac"] }
+sha2 = "0.11"
+hmac = "0.13"
+digest = { version = "0.11", features = ["mac"] }
 wycheproof = { version = "0.6", default-features = false, features = ["ecdsa"] }

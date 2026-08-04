@@ -736,4 +736,64 @@ mod rustcrypto_signing {
         let rnd = RandomizedSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&D).unwrap();
         assert_eq!(rnd.verifying_key().as_sec1_bytes(), &PUB);
     }
+
+    // DigestSigner / DigestVerifier: hash the message internally. "sample"
+    // is the RFC 6979 §A.2.5 message whose SHA-256 is DIGEST, so the
+    // hash-internally sign must reproduce the RFC signature RS.
+    #[test]
+    fn digest_signer_roundtrip() {
+        use sha2::Digest;
+        use signature::{DigestSigner, DigestVerifier};
+
+        let signer = PrehashSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        let sig: [u8; 64] = signer
+            .try_sign_digest(|d: &mut Sha256| {
+                d.update(b"sample");
+                Ok(())
+            })
+            .expect("sign");
+        assert_eq!(sig, RS);
+
+        let vk = VerifyingKey::<U256>::from_sec1_bytes(PUB);
+        assert!(
+            vk.verify_digest(
+                |d: &mut Sha256| {
+                    d.update(b"sample");
+                    Ok(())
+                },
+                &sig
+            )
+            .is_ok()
+        );
+        // A different message must not verify against this signature.
+        assert!(
+            vk.verify_digest(
+                |d: &mut Sha256| {
+                    d.update(b"other");
+                    Ok(())
+                },
+                &sig
+            )
+            .is_err()
+        );
+    }
+
+    // RandomizedDigestSigner: hash-internally + hedged nonce; the result
+    // verifies against the derived key.
+    #[test]
+    fn randomized_digest_signer_roundtrip() {
+        use sha2::Digest;
+        use signature::RandomizedDigestSigner;
+
+        let signer =
+            RandomizedSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        let sig: [u8; 64] = signer
+            .try_sign_digest_with_rng(&mut SeqRng(7), |d: &mut Sha256| {
+                d.update(b"sample");
+                Ok(())
+            })
+            .expect("sign");
+        let vk = VerifyingKey::<U256>::from_sec1_bytes(PUB);
+        assert!(vk.verify_prehash(&DIGEST, &sig).is_ok());
+    }
 }
