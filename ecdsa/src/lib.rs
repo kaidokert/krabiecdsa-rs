@@ -1798,23 +1798,74 @@ pub mod dangerous {
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
+        // Local buffer-size guard: the SEC1 buffer below holds
+        // `1 + 2·ELEM_BYTES`, so ELEM_BYTES must fit MAX_ELEM. Same
+        // compile-time rejection SigningKey enforces; stating it here keeps
+        // the buffer invariant local — a wider custom curve fails to
+        // compile rather than slicing out of bounds.
+        const {
+            assert!(
+                C::ELEM_BYTES <= MAX_ELEM,
+                "Curve's ELEM_BYTES exceeds MAX_ELEM"
+            );
+        }
+        let eb = C::ELEM_BYTES;
+        // Derive Q = d·G fresh for this standalone entry point. A repeat
+        // signer (e.g. RandomizedSigningKey) caches the public key and uses
+        // the with-pubkey path to skip this per-signature scalar multiply.
+        let mut pubkey = [0u8; 1 + 2 * MAX_ELEM];
+        let q_ok = out_r.len() == eb
+            && out_s.len() == eb
+            && SigningKey::<C>::from_bytes(private_key)
+                .is_some_and(|sk| sk.verifying_key_sec1::<Tct>(&mut pubkey[..1 + 2 * eb]));
+        if !q_ok {
+            out_r.iter_mut().for_each(|b| *b = 0);
+            out_s.iter_mut().for_each(|b| *b = 0);
+            return false;
+        }
+        sign_hedged_verified_with_pubkey::<C, Tct, Tv, M>(
+            private_key,
+            &pubkey[..1 + 2 * eb],
+            digest,
+            added,
+            out_r,
+            out_s,
+        )
+    }
+
+    /// The verify-after-sign core shared by
+    /// [`sign_prehashed_ct_hedged_verified`] and [`RandomizedSigningKey`]:
+    /// hedged-sign, then verify `(r, s)` against the **already-derived**
+    /// SEC1 public key `pubkey_sec1` on the variable-time backend `Tv`. On
+    /// any failure both output slices are zeroed and `false` returned, so a
+    /// faulted signature is never released. Taking the public key as an
+    /// argument lets a repeat signer derive `d·G` once instead of per
+    /// signature.
+    fn sign_hedged_verified_with_pubkey<
+        C: Curve,
+        Tct: ConstantTimeInt,
+        Tv: FieldFor + ScalarBytes,
+        M: digest::KeyInit + digest::Mac,
+    >(
+        private_key: &[u8],
+        pubkey_sec1: &[u8],
+        digest: &[u8],
+        added: &[u8],
+        out_r: &mut [u8],
+        out_s: &mut [u8],
+    ) -> bool {
         let eb = C::ELEM_BYTES;
         if out_r.len() != eb || out_s.len() != eb {
+            out_r.iter_mut().for_each(|b| *b = 0);
+            out_s.iter_mut().for_each(|b| *b = 0);
             return false;
         }
         let signed = sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, added, out_r, out_s);
-
-        // Recompute Q = d·G and verify (r, s); a fault in the sign math
-        // fails this check. Q is derived fresh from the same key so no
-        // caller-supplied public key can mask a mismatch.
-        let mut pubkey = [0u8; 1 + 2 * MAX_ELEM];
-        let pk = &mut pubkey[..1 + 2 * eb];
-        let q_ok = SigningKey::<C>::from_bytes(private_key)
-            .is_some_and(|sk| sk.verifying_key_sec1::<Tct>(pk));
-        let verified = q_ok && verify_for_curve::<C, Tv>(pk, digest, out_r, out_s);
-
+        // A fault in the sign math fails this verify. `pubkey_sec1` is
+        // derived from the same secret key (freshly, or once at key
+        // construction), so no caller-supplied key can mask a mismatch.
+        let verified = verify_for_curve::<C, Tv>(pubkey_sec1, digest, out_r, out_s);
         if !(signed && verified) {
-            // Never release a signature that failed the fault check.
             out_r.iter_mut().for_each(|b| *b = 0);
             out_s.iter_mut().for_each(|b| *b = 0);
             return false;
@@ -2009,6 +2060,11 @@ pub mod dangerous {
     /// Experimental — see the [module warning](self).
     pub struct RandomizedSigningKey<C: Curve, Tct, Tv, M> {
         key: SigningKey<C>,
+        // SEC1 `0x04 || X || Y` for the verify-after-sign check, derived
+        // once here so repeated signing skips a per-signature `d·G`. Public
+        // material — no zeroization needed. Only `1 + 2·ELEM_BYTES` bytes
+        // are live.
+        pubkey: [u8; 1 + 2 * MAX_ELEM],
         _p: RandBackendMarker<Tct, Tv, M>,
     }
 
@@ -2020,7 +2076,8 @@ pub mod dangerous {
     > RandomizedSigningKey<C, Tct, Tv, M>
     {
         /// Wrap a private scalar, rejecting `d ∉ [1, n-1]` eagerly in
-        /// constant time (see [`PrehashSigningKey::from_bytes`]).
+        /// constant time (see [`PrehashSigningKey::from_bytes`]) and
+        /// precomputing the public key for the verify-after-sign check.
         #[must_use]
         pub fn from_bytes(private_key: &[u8]) -> Option<Self> {
             let key = SigningKey::from_bytes(private_key)?;
@@ -2029,8 +2086,13 @@ pub mod dangerous {
             if !bool::from(!d.ct_is_zero() & d.ct_lt(&n)) {
                 return None;
             }
+            let mut pubkey = [0u8; 1 + 2 * MAX_ELEM];
+            if !key.verifying_key_sec1::<Tct>(&mut pubkey[..1 + 2 * C::ELEM_BYTES]) {
+                return None;
+            }
             Some(Self {
                 key,
+                pubkey,
                 _p: core::marker::PhantomData,
             })
         }
@@ -2038,7 +2100,8 @@ pub mod dangerous {
         /// Hedged constant-time sign with a verify-after-sign fault check
         /// (see [`sign_prehashed_ct_hedged_verified`]). `added` is fresh
         /// entropy — distinct entropy per call makes repeated signatures
-        /// over one digest differ.
+        /// over one digest differ. Reuses the public key cached at
+        /// construction, so no `d·G` is recomputed per signature.
         #[must_use]
         pub fn sign_prehashed_hedged(
             &self,
@@ -2047,8 +2110,9 @@ pub mod dangerous {
             out_r: &mut [u8],
             out_s: &mut [u8],
         ) -> bool {
-            sign_prehashed_ct_hedged_verified::<C, Tct, Tv, M>(
+            sign_hedged_verified_with_pubkey::<C, Tct, Tv, M>(
                 &self.key.d[..C::ELEM_BYTES],
+                &self.pubkey[..1 + 2 * C::ELEM_BYTES],
                 digest,
                 added,
                 out_r,
