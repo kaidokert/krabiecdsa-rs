@@ -555,7 +555,7 @@ mod rustcrypto_signing {
 
     #[test]
     fn prehash_signer_roundtrip() {
-        let signer = PrehashSigningKey::<P256, U256Ct, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        let signer = PrehashSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&D).unwrap();
         let sig: [u8; 64] = signer.sign_prehash(&DIGEST).expect("sign");
         assert_eq!(sig, RS);
 
@@ -572,7 +572,7 @@ mod rustcrypto_signing {
         // d = 0 and d = n are rejected at construction (constant-time
         // range check), unlike the late-bound SigningKey which defers to
         // use-time rejection.
-        type K = PrehashSigningKey<P256, U256Ct, Hmac<Sha256>>;
+        type K = PrehashSigningKey<P256, U256Ct, U256, Hmac<Sha256>>;
         const N: [u8; 32] = hx("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
         assert!(K::from_bytes(&[0u8; 32]).is_none());
         assert!(K::from_bytes(&N).is_none());
@@ -719,5 +719,21 @@ mod rustcrypto_signing {
         assert!(K::from_bytes(&[0u8; 32]).is_none());
         assert!(K::from_bytes(&N).is_none());
         assert!(K::from_bytes(&D).is_some());
+    }
+
+    // signature::Keypair: both signer key types expose the matching
+    // verifying key, and it accepts a signature the key produces.
+    #[test]
+    fn keypair_verifying_key() {
+        use signature::Keypair;
+
+        let det = PrehashSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        let vk = det.verifying_key();
+        assert_eq!(vk.as_sec1_bytes(), &PUB);
+        let sig: [u8; 64] = det.sign_prehash(&DIGEST).unwrap();
+        assert!(vk.verify_prehash(&DIGEST, &sig).is_ok());
+
+        let rnd = RandomizedSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        assert_eq!(rnd.verifying_key().as_sec1_bytes(), &PUB);
     }
 }

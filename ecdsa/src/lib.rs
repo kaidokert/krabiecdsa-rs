@@ -406,10 +406,11 @@ macro_rules! define_curve {
             /// is constant-time up to RFC 6979's inherent rejection-loop
             /// count. Experimental — see [`dangerous`](crate::dangerous).
             #[cfg(feature = "experimental-signing")]
-            impl<Tct, M> signature::hazmat::PrehashSigner<[u8; 2 * $eb]>
-                for crate::dangerous::PrehashSigningKey<$marker, Tct, M>
+            impl<Tct, Tv, M> signature::hazmat::PrehashSigner<[u8; 2 * $eb]>
+                for crate::dangerous::PrehashSigningKey<$marker, Tct, Tv, M>
             where
                 Tct: crate::dangerous::ConstantTimeInt,
+                Tv: FieldFor + ScalarBytes,
                 M: digest::KeyInit + digest::Mac,
             {
                 fn sign_prehash(
@@ -423,6 +424,46 @@ macro_rules! define_curve {
                     } else {
                         Err(signature::Error::new())
                     }
+                }
+            }
+
+            /// [`signature::Keypair`]: the deterministic signer's
+            /// associated verifying key (over the `Tv` verify backend).
+            #[cfg(feature = "experimental-signing")]
+            impl<Tct, Tv, M> signature::Keypair
+                for crate::dangerous::PrehashSigningKey<$marker, Tct, Tv, M>
+            where
+                Tct: crate::dangerous::ConstantTimeInt,
+                Tv: FieldFor + ScalarBytes,
+                M: digest::KeyInit + digest::Mac,
+            {
+                type VerifyingKey = VerifyingKey<Tv>;
+                fn verifying_key(&self) -> VerifyingKey<Tv> {
+                    // Valid by construction (from_bytes rejects d ∉ [1, n-1]),
+                    // so the SEC1 derivation cannot fail here.
+                    let mut sec1 = [0u8; PUBKEY_BYTES];
+                    let _ = self.verifying_key_sec1(&mut sec1);
+                    VerifyingKey::from_sec1_bytes(sec1)
+                }
+            }
+
+            /// [`signature::Keypair`]: the randomized signer's associated
+            /// verifying key (over the `Tv` verify backend).
+            #[cfg(feature = "experimental-signing")]
+            impl<Tct, Tv, M> signature::Keypair
+                for crate::dangerous::RandomizedSigningKey<$marker, Tct, Tv, M>
+            where
+                Tct: crate::dangerous::ConstantTimeInt,
+                Tv: FieldFor + ScalarBytes,
+                M: digest::KeyInit + digest::Mac,
+            {
+                type VerifyingKey = VerifyingKey<Tv>;
+                fn verifying_key(&self) -> VerifyingKey<Tv> {
+                    // Valid by construction (from_bytes derives and caches
+                    // the public key, returning None on a degenerate scalar).
+                    let mut sec1 = [0u8; PUBKEY_BYTES];
+                    let _ = self.verifying_key_sec1(&mut sec1);
+                    VerifyingKey::from_sec1_bytes(sec1)
                 }
             }
 
@@ -1750,13 +1791,9 @@ pub mod dangerous {
         }
     }
 
-    /// Zero-size marker binding the backend/HMAC without owning them
-    /// (so auto traits stay unconditional), factored out to keep the
-    /// struct field readable.
-    type BackendMarker<Tct, M> = core::marker::PhantomData<fn() -> (Tct, M)>;
-
-    /// Three-backend marker (Ct sign / vartime verify / HMAC) for the
-    /// randomized signer — same purpose as [`BackendMarker`].
+    /// Zero-size marker binding the backends/HMAC without owning them (so
+    /// auto traits stay unconditional), factored out to keep the signing-key
+    /// struct fields readable. `Tct` Ct sign / `Tv` vartime verify / `M` HMAC.
     type RandBackendMarker<Tct, Tv, M> = core::marker::PhantomData<fn() -> (Tct, Tv, M)>;
 
     /// A [`SigningKey`] with its backend and HMAC bound, so it can
@@ -1766,16 +1803,22 @@ pub mod dangerous {
     /// `[u8; 2·ELEM_BYTES]` — the same reason
     /// [`PrehashVerifier`](signature::hazmat::PrehashVerifier) lives
     /// in the curve modules. `Tct` is the Ct backend (nonce derivation
-    /// and secret math both), `M` the HMAC.
+    /// and secret math both), `Tv` the variable-time verify backend (used
+    /// only by the [`signature::Keypair`] impl to name the public-key
+    /// type), and `M` the HMAC.
     ///
     /// Experimental — see the [module warning](self).
-    pub struct PrehashSigningKey<C: Curve, Tct, M> {
+    pub struct PrehashSigningKey<C: Curve, Tct, Tv, M> {
         key: SigningKey<C>,
-        _p: BackendMarker<Tct, M>,
+        _p: RandBackendMarker<Tct, Tv, M>,
     }
 
-    impl<C: Curve, Tct: ConstantTimeInt, M: digest::KeyInit + digest::Mac>
-        PrehashSigningKey<C, Tct, M>
+    impl<
+        C: Curve,
+        Tct: ConstantTimeInt,
+        Tv: FieldFor + ScalarBytes,
+        M: digest::KeyInit + digest::Mac,
+    > PrehashSigningKey<C, Tct, Tv, M>
     {
         /// Wrap a private scalar (see [`SigningKey::from_bytes`]).
         ///
