@@ -1771,8 +1771,9 @@ pub mod dangerous {
     }
 
     /// Hedged constant-time sign **with a verify-after-sign fault check**.
-    /// Signs via [`sign_prehashed_ct_hedged`], then recomputes the public
-    /// key `d·G` (constant-time, backend `Tct`) and verifies the fresh
+    /// Produces a hedged signature (as [`sign_prehashed_ct_hedged`]), then
+    /// derives the public key `d·G` (constant-time, backend `Tct`) and
+    /// verifies the fresh
     /// `(r, s)` through the variable-time verify path (backend `Tv`)
     /// before accepting. A computational fault in the signature math is
     /// caught here; on any failure the outputs are zeroed and `false` is
