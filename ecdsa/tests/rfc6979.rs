@@ -1,30 +1,32 @@
 //! RFC 6979 signing vectors — the fixed set validating the
-//! experimental signer. Two layers:
+//! constant-time experimental signer. Two layers:
 //!
-//! - the low-level `sign_prehashed_with_k` fed the RFC's own `k`, to
+//! - the low-level `sign_prehashed_ct_with_k` fed the RFC's own `k`, to
 //!   pin the pure ECDSA math (§A.2.5, P-256/SHA-256);
-//! - the deterministic `derive_nonce_rfc6979` / `sign_prehashed`,
-//!   which must **derive** the RFC's `k` and reproduce its `r`/`s`
-//!   with no caller nonce, across curve (P-256, P-384) and HMAC hash
+//! - the deterministic `derive_nonce_rfc6979_ct` / `sign_prehashed_ct`,
+//!   which must **derive** the RFC's `k` and reproduce its `r`/`s` with
+//!   no caller nonce, across curve (P-256, P-384) and HMAC hash
 //!   (SHA-256/384/512) — the last exercising `hlen > qlen`.
 //!
 //! Digests are the precomputed hash of each RFC message (the API is
 //! prehashed). All r/s/k and the public keys were recomputed
-//! independently, not copied from the RFC.
+//! independently, not copied from the RFC. Verification uses the
+//! variable-time verify path (its inputs are public).
 
 #![cfg(feature = "experimental-signing")]
 
 use hmac::Hmac;
 use krabiecdsa::const_num_traits::Ct;
 use krabiecdsa::dangerous::{
-    SigningKey, derive_nonce_rfc6979, sign_prehashed, sign_prehashed_ct, sign_prehashed_ct_with_k,
-    sign_prehashed_with_k,
+    ConstantTimeInt, SigningKey, derive_nonce_rfc6979_ct, sign_prehashed_ct,
+    sign_prehashed_ct_with_k,
 };
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
-use krabiecdsa::{Curve, FieldFor, UnsignedModularInt, verify_for_curve};
+use krabiecdsa::{Curve, FieldFor, ScalarBytes, verify_for_curve};
 use sha2::{Sha256, Sha384, Sha512};
 
+// Variable-time verify backends.
 type U256 = fixed_bigint::FixedUInt<u32, 8>;
 type U384 = fixed_bigint::FixedUInt<u32, 12>;
 // Ct-personality backends for the constant-time signing path.
@@ -102,13 +104,15 @@ const P384_SHA384: &[Vec2] = &[
     },
 ];
 
-/// Deterministic path: derive k == RFC k, sign reproduces r/s with no
-/// caller nonce, and the signature verifies. Generic over curve `C`,
-/// backend `T`, and HMAC `M`, with `eb`-byte scalars.
-fn check_deterministic<C, T, M>(d: &str, pk: &[u8], vectors: &[Vec2], eb: usize)
+/// Deterministic CT path: derive k == RFC k, sign reproduces r/s with no
+/// caller nonce, and the signature verifies. Generic over curve `C`, Ct
+/// signing backend `Tct`, vartime verify backend `Tv`, and HMAC `M`, with
+/// `eb`-byte scalars.
+fn check_deterministic<C, Tct, Tv, M>(d: &str, pk: &[u8], vectors: &[Vec2], eb: usize)
 where
     C: Curve,
-    T: UnsignedModularInt + FieldFor,
+    Tct: ConstantTimeInt,
+    Tv: FieldFor + ScalarBytes,
     M: digest::KeyInit + digest::Mac,
 {
     let d = hx(d);
@@ -116,7 +120,7 @@ where
         let digest = hx(v.digest);
         let mut k = vec![0u8; eb];
         assert!(
-            derive_nonce_rfc6979::<C, T, M>(&d, &digest, &mut k),
+            derive_nonce_rfc6979_ct::<C, Tct, M>(&d, &digest, &mut k),
             "nonce derivation failed for {}",
             v.digest
         );
@@ -124,11 +128,11 @@ where
 
         let mut r = vec![0u8; eb];
         let mut s = vec![0u8; eb];
-        assert!(sign_prehashed::<C, T, M>(&d, &digest, &mut r, &mut s));
+        assert!(sign_prehashed_ct::<C, Tct, M>(&d, &digest, &mut r, &mut s));
         assert_eq!(r, hx(v.r), "r mismatch for {}", v.digest);
         assert_eq!(s, hx(v.s), "s mismatch for {}", v.digest);
         assert!(
-            verify_for_curve::<C, T>(pk, &digest, &r, &s),
+            verify_for_curve::<C, Tv>(pk, &digest, &r, &s),
             "deterministic signature failed to verify for {}",
             v.digest
         );
@@ -136,43 +140,7 @@ where
 }
 
 #[test]
-fn with_k_reproduces_and_verifies() {
-    let d = hx(D256);
-    let pk = pubkey(QX256, QY256);
-    for v in WITHK {
-        let digest = hx(v.digest);
-        let k = hx(v.k);
-        let mut r = [0u8; 32];
-        let mut s = [0u8; 32];
-        assert!(sign_prehashed_with_k::<P256, U256>(
-            &d, &digest, &k, &mut r, &mut s
-        ));
-        assert_eq!(r.to_vec(), hx(v.r));
-        assert_eq!(s.to_vec(), hx(v.s));
-        assert!(verify_for_curve::<P256, U256>(&pk, &digest, &r, &s));
-    }
-}
-
-#[test]
-fn deterministic_p256_sha256() {
-    check_deterministic::<P256, U256, Hmac<Sha256>>(D256, &pubkey(QX256, QY256), P256_SHA256, 32);
-}
-
-#[test]
-fn deterministic_p256_sha512() {
-    check_deterministic::<P256, U256, Hmac<Sha512>>(D256, &pubkey(QX256, QY256), P256_SHA512, 32);
-}
-
-#[test]
-fn deterministic_p384_sha384() {
-    check_deterministic::<P384, U384, Hmac<Sha384>>(D384, &pubkey(QX384, QY384), P384_SHA384, 48);
-}
-
-// The constant-time path (RCB complete formulas on the Ct surface)
-// must produce byte-for-byte the same signatures as the vartime path.
-
-#[test]
-fn ct_with_k_reproduces_rfc_p256() {
+fn with_k_reproduces_rfc_p256() {
     let d = hx(D256);
     let pk = pubkey(QX256, QY256);
     for v in WITHK {
@@ -183,44 +151,40 @@ fn ct_with_k_reproduces_rfc_p256() {
         assert!(sign_prehashed_ct_with_k::<P256, U256Ct>(
             &d, &digest, &k, &mut r, &mut s
         ));
-        assert_eq!(r.to_vec(), hx(v.r), "ct r mismatch for {}", v.digest);
-        assert_eq!(s.to_vec(), hx(v.s), "ct s mismatch for {}", v.digest);
+        assert_eq!(r.to_vec(), hx(v.r), "r mismatch for {}", v.digest);
+        assert_eq!(s.to_vec(), hx(v.s), "s mismatch for {}", v.digest);
         assert!(verify_for_curve::<P256, U256>(&pk, &digest, &r, &s));
     }
 }
 
 #[test]
-fn ct_deterministic_p256_sha256() {
-    let d = hx(D256);
-    let pk = pubkey(QX256, QY256);
-    for v in P256_SHA256 {
-        let digest = hx(v.digest);
-        let mut r = [0u8; 32];
-        let mut s = [0u8; 32];
-        assert!(sign_prehashed_ct::<P256, U256Ct, Hmac<Sha256>>(
-            &d, &digest, &mut r, &mut s
-        ));
-        assert_eq!(r.to_vec(), hx(v.r), "ct r mismatch for {}", v.digest);
-        assert_eq!(s.to_vec(), hx(v.s), "ct s mismatch for {}", v.digest);
-        assert!(verify_for_curve::<P256, U256>(&pk, &digest, &r, &s));
-    }
+fn deterministic_p256_sha256() {
+    check_deterministic::<P256, U256Ct, U256, Hmac<Sha256>>(
+        D256,
+        &pubkey(QX256, QY256),
+        P256_SHA256,
+        32,
+    );
 }
 
 #[test]
-fn ct_deterministic_p384_sha384() {
-    let d = hx(D384);
-    let pk = pubkey(QX384, QY384);
-    for v in P384_SHA384 {
-        let digest = hx(v.digest);
-        let mut r = [0u8; 48];
-        let mut s = [0u8; 48];
-        assert!(sign_prehashed_ct::<P384, U384Ct, Hmac<Sha384>>(
-            &d, &digest, &mut r, &mut s
-        ));
-        assert_eq!(r.to_vec(), hx(v.r), "ct r mismatch for {}", v.digest);
-        assert_eq!(s.to_vec(), hx(v.s), "ct s mismatch for {}", v.digest);
-        assert!(verify_for_curve::<P384, U384>(&pk, &digest, &r, &s));
-    }
+fn deterministic_p256_sha512() {
+    check_deterministic::<P256, U256Ct, U256, Hmac<Sha512>>(
+        D256,
+        &pubkey(QX256, QY256),
+        P256_SHA512,
+        32,
+    );
+}
+
+#[test]
+fn deterministic_p384_sha384() {
+    check_deterministic::<P384, U384Ct, U384, Hmac<Sha384>>(
+        D384,
+        &pubkey(QX384, QY384),
+        P384_SHA384,
+        48,
+    );
 }
 
 // SigningKey: owns the secret (Zeroizing), signs via the CT path, and
@@ -300,48 +264,48 @@ fn rejects_out_of_range_and_malformed() {
     let mut s = [0u8; 32];
 
     // with-k: out-of-range d / k
-    assert!(!sign_prehashed_with_k::<P256, U256>(
+    assert!(!sign_prehashed_ct_with_k::<P256, U256Ct>(
         &zero, &digest, &k, &mut r, &mut s
     ));
-    assert!(!sign_prehashed_with_k::<P256, U256>(
+    assert!(!sign_prehashed_ct_with_k::<P256, U256Ct>(
         &n, &digest, &k, &mut r, &mut s
     ));
-    assert!(!sign_prehashed_with_k::<P256, U256>(
+    assert!(!sign_prehashed_ct_with_k::<P256, U256Ct>(
         &d, &digest, &zero, &mut r, &mut s
     ));
-    assert!(!sign_prehashed_with_k::<P256, U256>(
+    assert!(!sign_prehashed_ct_with_k::<P256, U256Ct>(
         &d, &digest, &n, &mut r, &mut s
     ));
     // with-k: empty digest, wrong lengths
-    assert!(!sign_prehashed_with_k::<P256, U256>(
+    assert!(!sign_prehashed_ct_with_k::<P256, U256Ct>(
         &d,
         &[],
         &k,
         &mut r,
         &mut s
     ));
-    assert!(!sign_prehashed_with_k::<P256, U256>(
+    assert!(!sign_prehashed_ct_with_k::<P256, U256Ct>(
         &d,
         &digest,
         &k,
         &mut r[..31],
         &mut s
     ));
-    assert!(!sign_prehashed_with_k::<P256, U256>(
+    assert!(!sign_prehashed_ct_with_k::<P256, U256Ct>(
         &d[..31],
         &digest,
         &k,
         &mut r,
         &mut s
     ));
-    assert!(!sign_prehashed_with_k::<P256, U256>(
+    assert!(!sign_prehashed_ct_with_k::<P256, U256Ct>(
         &d,
         &digest,
         &k[..31],
         &mut r,
         &mut s
     ));
-    assert!(!sign_prehashed_with_k::<P256, U256>(
+    assert!(!sign_prehashed_ct_with_k::<P256, U256Ct>(
         &d,
         &digest,
         &k,
@@ -349,24 +313,23 @@ fn rejects_out_of_range_and_malformed() {
         &mut s[..31]
     ));
 
-    // deterministic: out-of-range d, empty digest, wrong lengths
-    assert!(!sign_prehashed::<P256, U256, Hmac<Sha256>>(
+    // deterministic: out-of-range d, empty digest, wrong-length buffers
+    assert!(!sign_prehashed_ct::<P256, U256Ct, Hmac<Sha256>>(
         &zero, &digest, &mut r, &mut s
     ));
-    assert!(!sign_prehashed::<P256, U256, Hmac<Sha256>>(
+    assert!(!sign_prehashed_ct::<P256, U256Ct, Hmac<Sha256>>(
         &d,
         &[],
         &mut r,
         &mut s
     ));
-    // deterministic: wrong-length output buffers
-    assert!(!sign_prehashed::<P256, U256, Hmac<Sha256>>(
+    assert!(!sign_prehashed_ct::<P256, U256Ct, Hmac<Sha256>>(
         &d,
         &digest,
         &mut r[..31],
         &mut s
     ));
-    assert!(!sign_prehashed::<P256, U256, Hmac<Sha256>>(
+    assert!(!sign_prehashed_ct::<P256, U256Ct, Hmac<Sha256>>(
         &d,
         &digest,
         &mut r,
@@ -376,22 +339,22 @@ fn rejects_out_of_range_and_malformed() {
     // nonce derivation: short key, empty digest, short and oversized out_k
     let mut kbuf = [0u8; 32];
     let mut kbuf_over = [0u8; 33];
-    assert!(!derive_nonce_rfc6979::<P256, U256, Hmac<Sha256>>(
+    assert!(!derive_nonce_rfc6979_ct::<P256, U256Ct, Hmac<Sha256>>(
         &d[..31],
         &digest,
         &mut kbuf
     ));
-    assert!(!derive_nonce_rfc6979::<P256, U256, Hmac<Sha256>>(
+    assert!(!derive_nonce_rfc6979_ct::<P256, U256Ct, Hmac<Sha256>>(
         &d,
         &[],
         &mut kbuf
     ));
-    assert!(!derive_nonce_rfc6979::<P256, U256, Hmac<Sha256>>(
+    assert!(!derive_nonce_rfc6979_ct::<P256, U256Ct, Hmac<Sha256>>(
         &d,
         &digest,
         &mut kbuf[..31]
     ));
-    assert!(!derive_nonce_rfc6979::<P256, U256, Hmac<Sha256>>(
+    assert!(!derive_nonce_rfc6979_ct::<P256, U256Ct, Hmac<Sha256>>(
         &d,
         &digest,
         &mut kbuf_over

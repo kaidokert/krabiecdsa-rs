@@ -928,19 +928,13 @@ where
 /// real keys.**
 ///
 /// Off by default behind the `experimental-signing` cargo feature and
-/// gated behind this deliberately-named module. Two families live here:
-///
-/// - **Variable-time POC** — [`dangerous::sign_prehashed`] (RFC 6979
-///   deterministic) and [`dangerous::sign_prehashed_with_k`] (caller
-///   `k`). These run on the non-constant-time (`Nct`) modmath surface
-///   and leak the secret scalar and nonce through timing; correctness
-///   demonstrators only.
-/// - **Constant-time** — [`dangerous::sign_prehashed_ct`],
-///   [`dangerous::SigningKey`], [`dangerous::PrehashSigningKey`], and the
-///   hedged [`dangerous::RandomizedSigningKey`]. The secret operations
-///   run on the `Ct` surface (RCB complete formulas, branch-free ladder,
-///   Fermat inverse), constant-time up to RFC 6979's inherent
-///   rejection-loop count.
+/// gated behind this deliberately-named module. Every signer here runs the
+/// secret operations on the constant-time (`Ct`) modmath surface — RCB
+/// complete formulas, a branch-free double-and-add-always ladder, and a
+/// Fermat inverse — via [`dangerous::sign_prehashed_ct`],
+/// [`dangerous::SigningKey`], [`dangerous::PrehashSigningKey`], and the
+/// hedged [`dangerous::RandomizedSigningKey`]. The deterministic paths are
+/// constant-time up to RFC 6979's inherent rejection-loop count.
 ///
 /// The constant-time guarantee is **timing only**. It does NOT cover:
 ///
@@ -966,60 +960,12 @@ pub mod dangerous {
     use super::*;
     use zeroize::{Zeroize, Zeroizing};
 
-    /// Fixed-iteration double-and-add `scalar · base`. Variable-time
-    /// (POC only — see the module warning).
-    fn scalar_mul<'f, F: FieldOps>(
-        f: &'f F,
-        curve_a: &F::Residue<'f>,
-        bits: usize,
-        scalar: &F::Backend,
-        base: &Point<'f, F>,
-    ) -> Point<'f, F>
-    where
-        F::Backend: ScalarBytes,
-    {
-        let mut acc = infinity(f);
-        for i in (0..bits).rev() {
-            acc = double(f, curve_a, &acc);
-            if bit(scalar, i) {
-                acc = add(f, curve_a, &acc, base);
-            }
-        }
-        acc
-    }
-
-    /// Serialize `v` to `out.len()` big-endian bytes (no `ToBytes`
-    /// bound needed on the backend). Consumes a running copy one bit
-    /// at a time — single-bit shifts rather than one wide shift per
-    /// bit, so it stays linear in the backend's width.
-    // `#[inline(never)]`: the per-bit `if` below is variable-time, so this
-    // must never be reachable from a secret on the constant-time path.
-    // Keeping it a distinct symbol means the taint gate reports any such
-    // misuse at *this* frame (unsuppressed) instead of letting it hide
-    // inside a suppressed sign frame — use `to_be_ct` for secret scalars.
-    #[inline(never)]
-    fn to_be<T: ScalarBytes>(v: &T, out: &mut [u8]) {
-        let mut acc = v.clone();
-        for slot in out.iter_mut().rev() {
-            let mut b = 0u8;
-            for j in 0..8 {
-                // `acc.clone() & one` — by-value `&` consumes its lhs, but
-                // `acc` is reused by the `>>=` below, so don't move it.
-                if acc.clone() & T::one() != T::zero() {
-                    b |= 1 << j;
-                }
-                acc >>= 1;
-            }
-            *slot = b;
-        }
-    }
-
     /// Branch-free big-endian serialization for a **secret** scalar on the
-    /// Ct backend. [`to_be`]'s per-bit `if` leaks the value's bits in
-    /// variable time; here the bit selects via `subtle`'s branch-free
-    /// `conditional_select` instead. Used for the secret nonce and the
-    /// signature scalars so the constant-time sign never serializes a
-    /// secret through a data-dependent branch.
+    /// Ct backend. A naive per-bit serializer's `if` would leak the value's
+    /// bits in variable time; here the bit selects via `subtle`'s
+    /// branch-free `conditional_select` instead. Used for the secret nonce
+    /// and the signature scalars so the constant-time sign never serializes
+    /// a secret through a data-dependent branch.
     #[inline(never)]
     fn to_be_ct<T: ConstantTimeInt>(v: &T, out: &mut [u8]) {
         use subtle::ConditionallySelectable;
@@ -1033,97 +979,6 @@ pub mod dangerous {
             }
             *slot = b;
         }
-    }
-
-    /// Sign `digest` under `private_key` with an **externally supplied
-    /// nonce** `k`, writing the signature halves to `out_r` / `out_s`.
-    ///
-    /// All scalars are big-endian, `C::ELEM_BYTES` long. Returns
-    /// `false` (writing nothing meaningful) on any malformed input,
-    /// on `d`/`k` outside `[1, n−1]`, or on the degenerate `r == 0` /
-    /// `s == 0` outcomes (RFC 6979 says resample `k` — here the caller
-    /// must supply a different `k`). Produces the possibly-high-`s`
-    /// signature; low-`s` normalization is the caller's policy.
-    ///
-    /// **`k` MUST be unique and unpredictable per signature.** See the
-    /// [module warning](self); this is not a safe API.
-    #[must_use]
-    pub fn sign_prehashed_with_k<C: Curve, T: UnsignedModularInt + FieldFor>(
-        private_key: &[u8],
-        digest: &[u8],
-        k: &[u8],
-        out_r: &mut [u8],
-        out_s: &mut [u8],
-    ) -> bool {
-        const {
-            assert!(
-                core::mem::size_of::<T>() >= C::ELEM_BYTES,
-                "backend type narrower than the curve's field element"
-            );
-            assert!(
-                C::P.len() == C::ELEM_BYTES
-                    && C::A.len() == C::ELEM_BYTES
-                    && C::B.len() == C::ELEM_BYTES
-                    && C::N.len() == C::ELEM_BYTES
-                    && C::GX.len() == C::ELEM_BYTES
-                    && C::GY.len() == C::ELEM_BYTES,
-                "Curve constants must all be exactly ELEM_BYTES long"
-            );
-        }
-        let eb = C::ELEM_BYTES;
-        if private_key.len() != eb
-            || k.len() != eb
-            || out_r.len() != eb
-            || out_s.len() != eb
-            || digest.is_empty()
-        {
-            return false;
-        }
-        let p = from_be::<T>(C::P);
-        let n = from_be::<T>(C::N);
-        let zero = T::zero();
-
-        let d = from_be::<T>(private_key);
-        let k_int = from_be::<T>(k);
-        if d == zero || !lt(&d, &n) || k_int == zero || !lt(&k_int, &n) {
-            return false;
-        }
-
-        let (Some(fp), Some(fn_)) = (T::field(p), T::field(n)) else {
-            return false;
-        };
-        let a_res = fp.reduce(&from_be::<T>(C::A));
-        let g = Point {
-            x: fp.reduce(&from_be::<T>(C::GX)),
-            y: fp.reduce(&from_be::<T>(C::GY)),
-            z: fp.one(),
-        };
-
-        // r = x(k·G) mod n.
-        let kg = scalar_mul(&fp, &a_res, eb * 8, &k_int, &g);
-        let Some(rx) = to_affine_x(&fp, &kg) else {
-            return false;
-        };
-        let r = fn_.into_raw(&fn_.reduce(&rx));
-        if r == zero {
-            return false;
-        }
-
-        // s = k⁻¹ · (e + r·d) mod n.
-        let e = fn_.reduce(&hash_to_scalar(digest, bitlen_be(C::N)));
-        let Some(k_inv) = fn_.inv(&fn_.reduce(&k_int)) else {
-            return false;
-        };
-        let rd = fn_.mul(&fn_.reduce(&r), &fn_.reduce(&d));
-        let s_res = fn_.mul(&k_inv, &fn_.add(&e, &rd));
-        let s = fn_.into_raw(&s_res);
-        if s == zero {
-            return false;
-        }
-
-        to_be::<T>(&r, out_r);
-        to_be::<T>(&s, out_s);
-        true
     }
 
     // RFC 6979 §3.2 HMAC-DRBG. `MAX_HLEN` covers SHA-512 output;
@@ -1250,62 +1105,8 @@ pub mod dangerous {
         }
     }
 
-    /// The RFC 6979 nonce for `(private_key, digest)`, written
-    /// big-endian to `out_k`. Exposed so the deterministic derivation
-    /// can be checked directly against the RFC vectors. Returns
-    /// `false` on malformed input or an out-of-range key.
-    ///
-    /// Same experimental caveats as the rest of this module.
-    #[must_use]
-    pub fn derive_nonce_rfc6979<
-        C: Curve,
-        T: UnsignedModularInt + FieldFor,
-        M: digest::KeyInit + digest::Mac,
-    >(
-        private_key: &[u8],
-        digest: &[u8],
-        out_k: &mut [u8],
-    ) -> bool {
-        const {
-            assert!(
-                C::ELEM_BYTES <= MAX_QLEN_BYTES,
-                "Curve's ELEM_BYTES exceeds MAX_QLEN_BYTES"
-            );
-        }
-        let eb = C::ELEM_BYTES;
-        if private_key.len() != eb || out_k.len() != eb || digest.is_empty() {
-            return false;
-        }
-        let n = from_be::<T>(C::N);
-        let d = from_be::<T>(private_key);
-        if d == T::zero() || !lt(&d, &n) {
-            return false;
-        }
-        let Some(fn_) = T::field(n) else {
-            return false;
-        };
-        let qlen = bitlen_be(C::N);
-
-        // h1 = bits2octets(digest) = int2octets(bits2int(digest) mod n).
-        let mut h1 = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
-        let e = fn_.into_raw(&fn_.reduce(&hash_to_scalar::<T>(digest, qlen)));
-        to_be::<T>(&e, &mut h1[..eb]);
-
-        let Some(mut k) =
-            rfc6979_nonce::<C, T, M>(private_key, &h1[..eb], &[], &n, qlen, |cand, n| {
-                *cand != T::zero() && lt(cand, n)
-            })
-        else {
-            return false;
-        };
-        to_be::<T>(&k, out_k);
-        k.zeroize();
-        true
-    }
-
-    /// **Constant-time** RFC 6979 nonce derivation — the `Ct`-backend
-    /// analogue of [`derive_nonce_rfc6979`], written big-endian to
-    /// `out_k`. Reproduces the same deterministic `k` byte-for-byte
+    /// **Constant-time** RFC 6979 nonce derivation, written big-endian to
+    /// `out_k`. Reproduces the RFC's deterministic `k` byte-for-byte
     /// (validated against the RFC vectors), but the secret-dependent
     /// candidate range check runs on `subtle`'s constant-time
     /// comparisons instead of the vartime `<`. The HMAC-DRBG is
@@ -1390,44 +1191,6 @@ pub mod dangerous {
         to_be_ct::<Tct>(&k, out_k);
         k.zeroize();
         bool::from(d_valid)
-    }
-
-    /// Sign `digest` under `private_key` with an **RFC 6979
-    /// deterministic** nonce — no caller-supplied `k`, so the nonce
-    /// cannot be reused or biased by the caller. `M` is the HMAC whose
-    /// hash matches the digest's (e.g. `Hmac<Sha256>` for a SHA-256
-    /// digest).
-    ///
-    /// Still experimental and **not constant-time** — see the
-    /// [module warning](self). Same slice contract, range checks, and
-    /// `false`-on-degenerate behavior as [`sign_prehashed_with_k`];
-    /// the vanishingly rare `r == 0` / `s == 0` resample is not
-    /// implemented (it would thread the DRBG state through signing).
-    #[must_use]
-    pub fn sign_prehashed<
-        C: Curve,
-        T: UnsignedModularInt + FieldFor,
-        M: digest::KeyInit + digest::Mac,
-    >(
-        private_key: &[u8],
-        digest: &[u8],
-        out_r: &mut [u8],
-        out_s: &mut [u8],
-    ) -> bool {
-        const {
-            assert!(
-                C::ELEM_BYTES <= MAX_QLEN_BYTES,
-                "Curve's ELEM_BYTES exceeds MAX_QLEN_BYTES"
-            );
-        }
-        let eb = C::ELEM_BYTES;
-        // Zeroizing: the nonce is wiped on the early-return and normal
-        // paths alike.
-        let mut k = Zeroizing::new([0u8; MAX_QLEN_BYTES]);
-        if !derive_nonce_rfc6979::<C, T, M>(private_key, digest, &mut k[..eb]) {
-            return false;
-        }
-        sign_prehashed_with_k::<C, T>(private_key, digest, &k[..eb], out_r, out_s)
     }
 
     // ===================================================================
@@ -1621,9 +1384,10 @@ pub mod dangerous {
     /// backend `T`, given the nonce `k`. The secret scalar multiply
     /// `k·G` uses RCB complete formulas on the `Ct` modmath surface,
     /// and `k⁻¹`, `s` run through `FieldCt` — no secret-dependent
-    /// branches. Same slice/`false` contract as
-    /// [`sign_prehashed_with_k`]; `k` must still be unique and
-    /// unpredictable (use [`sign_prehashed_ct`] for RFC 6979).
+    /// branches. All scalars are big-endian, `C::ELEM_BYTES` long; returns
+    /// `false` on malformed input, an out-of-range `d`/`k`, or the
+    /// degenerate `r == 0` / `s == 0`. `k` must be unique and unpredictable
+    /// (use [`sign_prehashed_ct`] for RFC 6979).
     ///
     /// Experimental — see the [module warning](self).
     #[must_use]
