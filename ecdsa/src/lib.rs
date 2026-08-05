@@ -5,8 +5,7 @@
 //! P-384 ([`p384`]).
 //!
 //! `no_std`, no-alloc, verify-only, generic over the bigint backend:
-//! any type satisfying [`UnsignedModularInt`] (a blanket-implemented
-//! bound bundle) and at least as wide
+//! any type satisfying [`FieldFor`] + [`ScalarBytes`] and at least as wide
 //! as the curve can carry the arithmetic. This crate names no
 //! backend — the consumer brings one (a 256-bit type for P-256 /
 //! secp256k1, 384-bit for P-384; narrower fails the build):
@@ -29,89 +28,22 @@
 
 pub use modmath::{FieldFor, FieldOps};
 
-// [`UnsignedModularInt`]'s supertraits are spelled in these crates'
-// vocabularies, which makes their versions part of this crate's public
-// contract. Re-exported so a downstream backend implementor names
-// exactly the copies krabiecdsa was built against instead of adding
-// separately-versioned dependencies that may fail to unify.
+// The `FieldFor`/`ScalarBytes`/`ConstantTimeInt` bounds, the `Ct` backend
+// marker, and the `SchoolbookFieldRef` carrier live in these crates'
+// vocabularies, so their versions are part of this crate's public contract.
+// Re-exported so downstream code names exactly the copies krabiecdsa was
+// built against instead of adding separately-versioned dependencies that may
+// fail to unify. (`subtle`/`zeroize` are not re-exported — they appear only
+// as supertraits satisfied by the backend's own blanket impls, never in a
+// public signature, so a consumer that needs them depends on them directly.)
 pub use const_num_traits;
 pub use modmath;
-pub use subtle;
-pub use zeroize;
-
-/// Bound bundle for the generic bigint backend the verifiers build
-/// on. Marker trait, blanket-implemented for every conforming type
-/// (same arrangement as ed25519's `UnsignedModularInt`) — do not
-/// implement it manually. Any bigint
-/// implementing the `modmath` + `const-num-traits` surface qualifies
-/// automatically (use this crate's re-exports of both so the trait
-/// identities unify).
-///
-/// The bounds are exactly what `modmath::FieldNct` needs for its
-/// Montgomery precompute, `mul`/`add`/`sub`, and Fermat inversion,
-/// plus by-value shift/mask for scalar bit extraction and fallible
-/// big-endian deserialization ([`const_num_traits::FromByteSlice`]).
-/// Backends must be **at least as wide as the curve's field prime**
-/// (256 or 384 bits); a too-narrow instantiation is rejected at
-/// compile time by [`verify_for_curve`].
-pub trait UnsignedModularInt:
-    Copy
-    + PartialEq
-    + PartialOrd
-    + const_num_traits::Zero
-    + const_num_traits::One
-    + const_num_traits::WrappingMul<Output = Self>
-    + const_num_traits::WrappingAdd<Output = Self>
-    + const_num_traits::WrappingSub<Output = Self>
-    + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
-    + const_num_traits::FromByteSlice
-    + const_num_traits::BitsPrecision
-    + const_num_traits::WithPrecision
-    + core::ops::Shr<usize, Output = Self>
-    + core::ops::ShrAssign<usize>
-    + core::ops::BitAnd<Output = Self>
-    + modmath::Parity
-    + modmath::NonCt
-    + modmath::WideMul
-    + modmath::CiosMontMul
-    // modmath's MontStorage requires Zeroize when the dependency
-    // graph enables modmath/zeroize (feature unification in a larger
-    // build can do that even though this crate never asks for it);
-    // carrying DefaultIsZeroes here keeps the generic verify code
-    // compiling in both worlds. Same bound ed25519's bundle carries.
-    + zeroize::DefaultIsZeroes
-{
-}
-
-impl<T> UnsignedModularInt for T where
-    T: Copy
-        + PartialEq
-        + PartialOrd
-        + const_num_traits::Zero
-        + const_num_traits::One
-        + const_num_traits::WrappingMul<Output = Self>
-        + const_num_traits::WrappingAdd<Output = Self>
-        + const_num_traits::WrappingSub<Output = Self>
-        + const_num_traits::ops::overflowing::OverflowingAdd<Output = Self>
-        + const_num_traits::FromByteSlice
-        + const_num_traits::BitsPrecision
-        + const_num_traits::WithPrecision
-        + core::ops::Shr<usize, Output = Self>
-        + core::ops::ShrAssign<usize>
-        + core::ops::BitAnd<Output = Self>
-        + modmath::Parity
-        + modmath::NonCt
-        + modmath::WideMul
-        + modmath::CiosMontMul
-        + zeroize::DefaultIsZeroes
-{
-}
 
 /// The byte-and-shift surface the personality-agnostic scalar helpers
 /// (`from_be`, `to_be`, `hash_to_scalar`, `lt`, `bit`) need. Both the
-/// Nct verify backend ([`UnsignedModularInt`]) and the Ct signing
-/// backend ([`dangerous::ConstantTimeInt`]) carry these, so the
-/// helpers are written once against this subset and reused by both.
+/// Nct verify backend and the Ct signing backend
+/// ([`dangerous::ConstantTimeInt`]) carry these, so the helpers are
+/// written once against this subset and reused by both.
 pub trait ScalarBytes:
     Clone
     + PartialEq
@@ -1331,8 +1263,9 @@ pub mod dangerous {
     use modmath::{FieldCt, ResidueCt};
 
     /// Constant-time bigint backend for signing: the Ct-personality
-    /// analog of [`UnsignedModularInt`]. Blanket-implemented for every
-    /// conforming type; in practice `fixed_bigint::FixedUInt<_, _, Ct>`.
+    /// analog of the verify backend's [`FieldFor`] + [`ScalarBytes`]
+    /// bundle. Blanket-implemented for every conforming type; in practice
+    /// `fixed_bigint::FixedUInt<_, _, Ct>`.
     /// The Nct verify backend does **not** qualify — the personalities
     /// are distinct types by design, so secret signing arithmetic runs
     /// on this `Ct` backend, separate from the `Nct` one.

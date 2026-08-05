@@ -95,7 +95,7 @@ fn suite<C: Curve, T: FieldFor + ScalarBytes>(v: &Vector) {
 /// Point-arithmetic sanity: G is on the curve, 2G matches an independently
 /// computed reference, and the exceptional cases (P+P dispatch,
 /// P+(−P) = O) behave.
-fn point_arithmetic_suite<C: Curve, T: UnsignedModularInt + FieldFor + core::fmt::Debug>(
+fn point_arithmetic_suite<C: Curve, T: FieldFor + ScalarBytes + core::fmt::Debug>(
     g2x: &[u8],
     g2y: &[u8],
 ) {
