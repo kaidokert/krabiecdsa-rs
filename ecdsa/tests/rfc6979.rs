@@ -13,7 +13,9 @@
 //! independently, not copied from the RFC. Verification uses the
 //! variable-time verify path (its inputs are public).
 
-#![cfg(feature = "experimental-signing")]
+// Uses the hazmat known-answer-test primitives (sign-with-k, raw nonce
+// derivation), so it needs `test-vectors`, not just `experimental-signing`.
+#![cfg(feature = "test-vectors")]
 
 use hmac::Hmac;
 use krabiecdsa::const_num_traits::Ct;

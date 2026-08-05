@@ -25,6 +25,13 @@ subtle = { version = "2.6", default-features = false }
 # until it is independently audited. The no-feature build carries none of it
 # and stays verify-only.
 experimental-signing = ["dep:digest", "signature/rand_core", "signature/digest"]
+# Exposes the hazmat known-answer-test primitives — sign-with-caller-nonce
+# (`sign_prehashed_ct_with_k`) and raw nonce derivation
+# (`derive_nonce_rfc6979_ct`). Neither is a production operation (an explicit
+# or exposed nonce is a key-leak footgun); they exist to reproduce RFC/CAVP
+# vectors and are consumed by the integration tests and the ct-verify
+# harness. Default off; implies `experimental-signing`.
+test-vectors = ["experimental-signing"]
 
 [dev-dependencies]
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["cios", "zeroize"] }

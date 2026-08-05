@@ -1240,7 +1240,11 @@ pub mod dangerous {
     /// the RFC's inherent rejection-loop count (reject probability
     /// ~2⁻³², i.e. effectively always one iteration).
     ///
-    /// Same experimental caveats as the rest of this module.
+    /// **`test-vectors` only.** Exposing the derived nonce is a
+    /// known-answer-test aid, not a production operation (a signer never
+    /// needs the raw `k`); gated behind the `test-vectors` feature. Same
+    /// experimental caveats as the rest of this module.
+    #[cfg(feature = "test-vectors")]
     #[must_use]
     pub fn derive_nonce_rfc6979_ct<
         C: Curve,
@@ -1254,11 +1258,12 @@ pub mod dangerous {
         derive_nonce_rfc6979_ct_added::<C, Tct, M>(private_key, digest, &[], out_k)
     }
 
-    /// Hedged variant of [`derive_nonce_rfc6979_ct`]: `added` is RFC 6979
-    /// §3.6 additional data (fresh entropy) mixed into the DRBG seed, so
-    /// the derived `k` varies per call while the derivation stays
-    /// constant-time. With `added` empty this reproduces
-    /// [`derive_nonce_rfc6979_ct`] byte-for-byte.
+    /// Constant-time RFC 6979 nonce derivation with RFC 6979 §3.6 additional
+    /// data `added` mixed into the DRBG seed, so the derived `k` varies per
+    /// call while the derivation stays constant-time. With `added` empty
+    /// this reproduces the plain RFC 6979 `k` byte-for-byte. The always-
+    /// compiled core behind the hedged sign and the `test-vectors`
+    /// nonce-derivation entrypoint.
     fn derive_nonce_rfc6979_ct_added<
         C: Curve,
         Tct: ConstantTimeInt,
@@ -1505,18 +1510,37 @@ pub mod dangerous {
         (x, valid)
     }
 
-    /// **Constant-time** ECDSA signing over curve `C` with the Ct
-    /// backend `T`, given the nonce `k`. The secret scalar multiply
-    /// `k·G` uses RCB complete formulas on the `Ct` modmath surface,
-    /// and `k⁻¹`, `s` run through `FieldCt` — no secret-dependent
-    /// branches. All scalars are big-endian, `C::ELEM_BYTES` long; returns
-    /// `false` on malformed input, an out-of-range `d`/`k`, or the
-    /// degenerate `r == 0` / `s == 0`. `k` must be unique and unpredictable
-    /// (use [`sign_prehashed_ct`] for RFC 6979).
+    /// **Constant-time** ECDSA signing over curve `C` with the Ct backend
+    /// `T`, given a caller-supplied nonce `k`. The secret scalar multiply
+    /// `k·G` uses RCB complete formulas on the `Ct` modmath surface, and
+    /// `k⁻¹`, `s` run through `FieldCt` — no secret-dependent branches. All
+    /// scalars are big-endian, `C::ELEM_BYTES` long; returns `false` on
+    /// malformed input, an out-of-range `d`/`k`, or the degenerate
+    /// `r == 0` / `s == 0`.
+    ///
+    /// **`test-vectors` only, hazmat.** Signing with a caller-supplied nonce
+    /// is unsafe — a reused or predictable `k` leaks the private key — so
+    /// this exists to reproduce known-answer vectors and is gated behind the
+    /// `test-vectors` feature. Production signs via the `PrehashSigner` /
+    /// `RandomizedPrehashSigner` traits (RFC 6979, nonce derived internally).
     ///
     /// Experimental — see the [module warning](self).
+    #[cfg(feature = "test-vectors")]
     #[must_use]
     pub fn sign_prehashed_ct_with_k<C: Curve, T: ConstantTimeInt>(
+        private_key: &[u8],
+        digest: &[u8],
+        k: &[u8],
+        out_r: &mut [u8],
+        out_s: &mut [u8],
+    ) -> bool {
+        sign_prehashed_ct_with_k_inner::<C, T>(private_key, digest, k, out_r, out_s)
+    }
+
+    /// Core RCB signature math given the nonce `k` — always compiled; the
+    /// implementation behind the deterministic/hedged sign and the
+    /// `test-vectors` sign-with-`k` entrypoint.
+    fn sign_prehashed_ct_with_k_inner<C: Curve, T: ConstantTimeInt>(
         private_key: &[u8],
         digest: &[u8],
         k: &[u8],
@@ -1596,9 +1620,9 @@ pub mod dangerous {
 
     /// **Constant-time** ECDSA signing with an RFC 6979 deterministic
     /// nonce. Both halves run on the Ct backend `Tct`: the nonce is
-    /// derived via [`derive_nonce_rfc6979_ct`], then the secret
-    /// signature math runs constant-time via
-    /// [`sign_prehashed_ct_with_k`]. `M` is the HMAC whose hash matches
+    /// derived via the constant-time RFC 6979 DRBG, then the secret
+    /// signature math (RCB scalar multiply + `k⁻¹`) runs constant-time.
+    /// `M` is the HMAC whose hash matches
     /// the digest's (e.g. `Hmac<Sha256>` for a SHA-256 digest).
     ///
     /// Experimental — see the [module warning](self).
@@ -1655,7 +1679,7 @@ pub mod dangerous {
         let derived =
             derive_nonce_rfc6979_ct_added::<C, Tct, M>(private_key, digest, added, &mut k[..eb]);
         let signed =
-            sign_prehashed_ct_with_k::<C, Tct>(private_key, digest, &k[..eb], out_r, out_s);
+            sign_prehashed_ct_with_k_inner::<C, Tct>(private_key, digest, &k[..eb], out_r, out_s);
         derived & signed
     }
 
