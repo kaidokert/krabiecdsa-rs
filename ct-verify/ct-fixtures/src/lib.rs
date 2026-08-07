@@ -7,7 +7,7 @@
 //! marked undefined.
 //!
 //! Everything reaches the CT surface through the public deployment API
-//! ([`krabiecdsa::dangerous::sign_prehashed_ct_with_k`]), so no
+//! ([`krabiecdsa::signing::sign_prehashed_ct_with_k`]), so no
 //! krabiecdsa source is instrumented. The one discipline these fixtures
 //! must never break: wrap every secret input and every output in
 //! [`core::hint::black_box`], or fat-LTO `opt-level="z"` folds the body
@@ -21,7 +21,12 @@
 //! `deterministic`-gated `ct_fix__ecdsa_sign_det_*` extend coverage to
 //! the whole `sign_prehashed_ct` — the nonce derivation is constant-time
 //! too, so tainting `d` through the RFC 6979 HMAC-DRBG stays clean (the
-//! rejection-loop count is a declassified, public signal).
+//! rejection-loop count is a declassified, public signal). The
+//! `ct_fix__ecdsa_sign_hedged_*` (also `deterministic`-gated) cover the
+//! hedged `sign_prehashed_ct_hedged` — identical, plus RFC 6979 §3.6
+//! additional data (`added`) folded into the DRBG seed. `added` is public
+//! (never tainted); the verify-after-sign layer is excluded on purpose —
+//! it runs variable-time on the public `(r, s)`, so it is not CT surface.
 //!
 //! Naming contract the gates key off:
 //! - `ct_fix__<op>__<carrier>` — a positive; its emitted code must be
@@ -40,7 +45,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 use core::hint::black_box;
 use fixed_bigint::FixedUInt;
 use krabiecdsa::const_num_traits::Ct;
-use krabiecdsa::dangerous::sign_prehashed_ct_with_k;
+use krabiecdsa::signing::sign_prehashed_ct_with_k;
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
 
@@ -87,6 +92,11 @@ pub const D384: [u8; 48] = hx("6b9d3dad2e1b8c1c05b19875b6659f4de23c3b667bf297ba9
 pub const K384: [u8; 48] = hx("94ed910d1a099dad3254e9242ae85abde4ba15168eaf0ca87a555fd56d10fbca2907e3e83ba95368623b8c4686915cf9");
 /// P-384 prehash (SHA-384 of "sample").
 pub const DIGEST384: [u8; 48] = hx("9a9083505bc92276aec4be312696ef7bf3bf603f4bbd381196a029f340585312313bca4a9b5b890efee42c77b1ee25fe");
+
+/// Public RFC 6979 §3.6 hedge entropy for the hedged-sign fixtures. Public,
+/// not secret — folded into the DRBG seed alongside the public digest, so
+/// the taint harness never marks it undefined.
+pub const ADDED: [u8; 32] = hx("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
 
 // --- positive fixtures ------------------------------------------------
 //
@@ -169,7 +179,7 @@ macro_rules! ct_sign_det_fixture {
             let digest = unsafe { *digest_ptr };
             let mut r = [0u8; $bytes];
             let mut s = [0u8; $bytes];
-            let ok = krabiecdsa::dangerous::sign_prehashed_ct::<$curve, $carrier, $mac>(
+            let ok = krabiecdsa::signing::sign_prehashed_ct::<$curve, $carrier, $mac>(
                 black_box(&d[..]),
                 &digest[..],
                 &mut r,
@@ -188,6 +198,59 @@ macro_rules! ct_sign_det_fixture {
 ct_sign_det_fixture!(ct_fix__ecdsa_sign_det_p256__fb32, P256, FixedUInt<u32, 8, Ct>, hmac::Hmac<sha2::Sha256>, 32);
 #[cfg(feature = "deterministic")]
 ct_sign_det_fixture!(ct_fix__ecdsa_sign_det_p384__fb32, P384, FixedUInt<u32, 12, Ct>, hmac::Hmac<sha2::Sha384>, 48);
+
+// --- hedged deterministic sign (RFC 6979 §3.6 additional data) ---------
+//
+// The RandomizedSigningKey / sign_prehashed_ct_hedged path: same CT nonce
+// derivation + RCB sign as the plain deterministic fixture, but with public
+// hedge entropy `added` folded into the DRBG seed (§3.6). Taints `d` only;
+// `added` and the digest are public. The verify-after-sign layer is
+// excluded — it runs variable-time on the public `(r, s)`, so it is not
+// part of the CT surface these gates attest.
+
+#[cfg(feature = "deterministic")]
+macro_rules! ct_sign_hedged_fixture {
+    ($name:ident, $curve:ty, $carrier:ty, $mac:ty, $bytes:literal) => {
+        /// Whole hedged deterministic sign driven by the secret `d`; the
+        /// digest and the §3.6 hedge entropy `added` are public and the
+        /// nonce is derived internally.
+        ///
+        /// # Safety
+        /// `d_ptr`/`digest_ptr`/`r_ptr`/`s_ptr` are valid, aligned
+        /// `$bytes`-byte arrays; `added_ptr` a valid, aligned 32-byte array.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(
+            d_ptr: *const [u8; $bytes],
+            digest_ptr: *const [u8; $bytes],
+            added_ptr: *const [u8; 32],
+            r_ptr: *mut [u8; $bytes],
+            s_ptr: *mut [u8; $bytes],
+        ) {
+            let d = black_box(unsafe { *d_ptr });
+            let digest = unsafe { *digest_ptr };
+            let added = unsafe { *added_ptr };
+            let mut r = [0u8; $bytes];
+            let mut s = [0u8; $bytes];
+            let ok = krabiecdsa::signing::sign_prehashed_ct_hedged::<$curve, $carrier, $mac>(
+                black_box(&d[..]),
+                &digest[..],
+                &added[..],
+                &mut r,
+                &mut s,
+            );
+            unsafe {
+                *r_ptr = black_box(r);
+                *s_ptr = black_box(s);
+            }
+            let _ = black_box(ok);
+        }
+    };
+}
+
+#[cfg(feature = "deterministic")]
+ct_sign_hedged_fixture!(ct_fix__ecdsa_sign_hedged_p256__fb32, P256, FixedUInt<u32, 8, Ct>, hmac::Hmac<sha2::Sha256>, 32);
+#[cfg(feature = "deterministic")]
+ct_sign_hedged_fixture!(ct_fix__ecdsa_sign_hedged_p384__fb32, P384, FixedUInt<u32, 12, Ct>, hmac::Hmac<sha2::Sha384>, 48);
 
 // --- negative controls ------------------------------------------------
 //

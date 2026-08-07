@@ -5,22 +5,19 @@
 //! below is the deterministic RFC 6979 signature of the digest under
 //! the private key `d`, and every one was **verified by openssl
 //! 3.6.1** (`pkeyutl -verify`) before being recorded. The tests then
-//! assert that both signers — variable-time and constant-time —
-//! reproduce that exact signature and that our own verifier accepts
-//! it. So each vector is signed by us, accepted by openssl, and
-//! round-tripped through our verify.
+//! assert that our constant-time signer reproduces that exact signature
+//! and that our own verifier accepts it. So each vector is signed by us,
+//! accepted by openssl, and round-tripped through our verify.
 //!
 //! (NIST CAVP SigGen is *not* usable here: its ECDSA vectors withhold
 //! `d`/`k`, so a deterministic signer cannot reproduce their `r`/`s`.)
 
-#![cfg(feature = "experimental-signing")]
-
 use hmac::Hmac;
 use krabiecdsa::const_num_traits::Ct;
-use krabiecdsa::dangerous::{sign_prehashed, sign_prehashed_ct};
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
-use krabiecdsa::{Curve, FieldFor, UnsignedModularInt, verify_for_curve};
+use krabiecdsa::signing::{ConstantTimeInt, sign_prehashed_ct};
+use krabiecdsa::{Curve, FieldFor, ScalarBytes, verify_for_curve};
 use sha2::{Sha256, Sha384};
 
 type U256 = fixed_bigint::FixedUInt<u32, 8>;
@@ -78,14 +75,14 @@ const P384_VECS: &[XVec] = &[
     },
 ];
 
-/// Both signers reproduce the openssl-verified `(r, s)`, and our
-/// verifier accepts it. Generic over curve `C`, Nct backend `T`, Ct
-/// backend `Tct`, and HMAC `M`.
-fn check<C, T, Tct, M>(vectors: &[XVec])
+/// The CT signer reproduces the openssl-verified `(r, s)`, and our
+/// verifier accepts it. Generic over curve `C`, Ct signing backend
+/// `Tct`, vartime verify backend `Tv`, and HMAC `M`.
+fn check<C, Tct, Tv, M>(vectors: &[XVec])
 where
     C: Curve,
-    T: UnsignedModularInt + FieldFor,
-    Tct: krabiecdsa::dangerous::ConstantTimeInt,
+    Tct: ConstantTimeInt,
+    Tv: FieldFor + ScalarBytes,
     M: digest::KeyInit + digest::Mac,
 {
     for v in vectors {
@@ -93,12 +90,6 @@ where
         let digest = hx(v.digest);
         let pk = hx(v.pubkey);
         let (want_r, want_s) = (hx(v.r), hx(v.s));
-
-        let mut r = vec![0u8; C::ELEM_BYTES];
-        let mut s = vec![0u8; C::ELEM_BYTES];
-        assert!(sign_prehashed::<C, T, M>(&d, &digest, &mut r, &mut s));
-        assert_eq!(r, want_r, "vartime r mismatch");
-        assert_eq!(s, want_s, "vartime s mismatch");
 
         let mut rc = vec![0u8; C::ELEM_BYTES];
         let mut sc = vec![0u8; C::ELEM_BYTES];
@@ -109,7 +100,7 @@ where
         assert_eq!(sc, want_s, "ct s mismatch");
 
         assert!(
-            verify_for_curve::<C, T>(&pk, &digest, &want_r, &want_s),
+            verify_for_curve::<C, Tv>(&pk, &digest, &want_r, &want_s),
             "openssl-accepted signature failed our verify"
         );
     }
@@ -117,10 +108,10 @@ where
 
 #[test]
 fn openssl_cross_impl_p256() {
-    check::<P256, U256, U256Ct, Hmac<Sha256>>(P256_VECS);
+    check::<P256, U256Ct, U256, Hmac<Sha256>>(P256_VECS);
 }
 
 #[test]
 fn openssl_cross_impl_p384() {
-    check::<P384, U384, U384Ct, Hmac<Sha384>>(P384_VECS);
+    check::<P384, U384Ct, U384, Hmac<Sha384>>(P384_VECS);
 }

@@ -119,6 +119,49 @@ taint_det_fixture!(
     ct_fixtures::DIGEST384
 );
 
+// Hedged deterministic sign (RFC 6979 §3.6 additional data) — taints `d`
+// only; the nonce is derived internally with public hedge entropy `added`
+// folded into the DRBG seed. Same CT expectation as the plain deterministic
+// sign; this pins the §3.6 additional-data plumbing taint-clean.
+macro_rules! taint_hedged_fixture {
+    ($name:ident, $bytes:literal, $d:expr, $digest:expr) => {
+        unsafe extern "C" {
+            fn $name(
+                d_ptr: *const [u8; $bytes],
+                digest_ptr: *const [u8; $bytes],
+                added_ptr: *const [u8; 32],
+                r_ptr: *mut [u8; $bytes],
+                s_ptr: *mut [u8; $bytes],
+            );
+        }
+        ctgrind_fixture!($name, {
+            let d = $d;
+            let digest = $digest;
+            let added = ct_fixtures::ADDED; // public, not tainted
+            let mut r = [0u8; $bytes];
+            let mut s = [0u8; $bytes];
+            taint_val(&d);
+            unsafe { $name(&d, &digest, &added, &mut r, &mut s) }
+            untaint_val(&r);
+            untaint_val(&s);
+            let _ = black_box((r, s));
+        });
+    };
+}
+
+taint_hedged_fixture!(
+    ct_fix__ecdsa_sign_hedged_p256__fb32,
+    32,
+    ct_fixtures::D256,
+    ct_fixtures::DIGEST256
+);
+taint_hedged_fixture!(
+    ct_fix__ecdsa_sign_hedged_p384__fb32,
+    48,
+    ct_fixtures::D384,
+    ct_fixtures::DIGEST384
+);
+
 // Negative controls in the fixture crate's own ABI shape (data-dependent
 // branch + early-exit compare on tainted bytes). Both MUST trip.
 unsafe extern "C" {

@@ -95,7 +95,7 @@ fn suite<C: Curve, T: FieldFor + ScalarBytes>(v: &Vector) {
 /// Point-arithmetic sanity: G is on the curve, 2G matches an independently
 /// computed reference, and the exceptional cases (P+P dispatch,
 /// P+(−P) = O) behave.
-fn point_arithmetic_suite<C: Curve, T: UnsignedModularInt + FieldFor + core::fmt::Debug>(
+fn point_arithmetic_suite<C: Curve, T: FieldFor + ScalarBytes + core::fmt::Debug>(
     g2x: &[u8],
     g2y: &[u8],
 ) {
@@ -532,11 +532,10 @@ mod p384_tests {
 
 // RustCrypto PrehashSigner round-trip: our signer produces the RFC
 // 6979 signature via the trait, our PrehashVerifier accepts it.
-#[cfg(feature = "experimental-signing")]
 mod rustcrypto_signing {
     use super::*;
-    use crate::dangerous::PrehashSigningKey;
     use crate::p256::{P256, VerifyingKey};
+    use crate::signing::PrehashSigningKey;
     use hmac::Hmac;
     use sha2::Sha256;
     use signature::hazmat::{PrehashSigner, PrehashVerifier};
@@ -555,7 +554,7 @@ mod rustcrypto_signing {
 
     #[test]
     fn prehash_signer_roundtrip() {
-        let signer = PrehashSigningKey::<P256, U256Ct, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        let signer = PrehashSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&D).unwrap();
         let sig: [u8; 64] = signer.sign_prehash(&DIGEST).expect("sign");
         assert_eq!(sig, RS);
 
@@ -572,12 +571,228 @@ mod rustcrypto_signing {
         // d = 0 and d = n are rejected at construction (constant-time
         // range check), unlike the late-bound SigningKey which defers to
         // use-time rejection.
-        type K = PrehashSigningKey<P256, U256Ct, Hmac<Sha256>>;
+        type K = PrehashSigningKey<P256, U256Ct, U256, Hmac<Sha256>>;
         const N: [u8; 32] = hx("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
         assert!(K::from_bytes(&[0u8; 32]).is_none());
         assert!(K::from_bytes(&N).is_none());
         // wrong length is still rejected by the inner SigningKey.
         assert!(K::from_bytes(&D[..31]).is_none());
         assert!(K::from_bytes(&D).is_some());
+    }
+
+    use crate::signing::{RandomizedSigningKey, sign_prehashed_ct, sign_prehashed_ct_hedged};
+    use signature::hazmat::RandomizedPrehashSigner;
+
+    fn concat_rs(r: &[u8; 32], s: &[u8; 32]) -> [u8; 64] {
+        let mut rs = [0u8; 64];
+        rs[..32].copy_from_slice(r);
+        rs[32..].copy_from_slice(s);
+        rs
+    }
+
+    // Test double: a counter-filled byte stream seeded by the ctor arg, so
+    // each instance yields a distinct, reproducible hedge draw. Not a CSPRNG.
+    struct SeqRng(u8);
+    impl signature::rand_core::TryRng for SeqRng {
+        type Error = core::convert::Infallible;
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            let mut b = [0u8; 4];
+            self.try_fill_bytes(&mut b)?;
+            Ok(u32::from_le_bytes(b))
+        }
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            let mut b = [0u8; 8];
+            self.try_fill_bytes(&mut b)?;
+            Ok(u64::from_le_bytes(b))
+        }
+        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+            for x in dst {
+                self.0 = self.0.wrapping_add(1);
+                *x = self.0;
+            }
+            Ok(())
+        }
+    }
+    impl signature::rand_core::TryCryptoRng for SeqRng {}
+
+    // Test double whose fill always fails, to exercise the fallible path.
+    #[derive(Debug)]
+    struct RngBroke;
+    impl core::fmt::Display for RngBroke {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("rng failure")
+        }
+    }
+    impl core::error::Error for RngBroke {}
+    struct FailRng;
+    impl signature::rand_core::TryRng for FailRng {
+        type Error = RngBroke;
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            Err(RngBroke)
+        }
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            Err(RngBroke)
+        }
+        fn try_fill_bytes(&mut self, _dst: &mut [u8]) -> Result<(), Self::Error> {
+            Err(RngBroke)
+        }
+    }
+    impl signature::rand_core::TryCryptoRng for FailRng {}
+
+    // Empty additional data reproduces the deterministic RFC 6979 signature
+    // byte-for-byte — hedging is strictly additive over the deterministic base.
+    #[test]
+    fn hedged_empty_matches_deterministic() {
+        let (mut r0, mut s0) = ([0u8; 32], [0u8; 32]);
+        assert!(sign_prehashed_ct::<P256, U256Ct, Hmac<Sha256>>(
+            &D, &DIGEST, &mut r0, &mut s0
+        ));
+        let (mut r1, mut s1) = ([0u8; 32], [0u8; 32]);
+        assert!(sign_prehashed_ct_hedged::<P256, U256Ct, Hmac<Sha256>>(
+            &D,
+            &DIGEST,
+            &[],
+            &mut r1,
+            &mut s1
+        ));
+        assert_eq!((r0, s0), (r1, s1));
+        assert_eq!(concat_rs(&r0, &s0), RS);
+    }
+
+    // Distinct entropy yields distinct signatures, each valid under the key.
+    #[test]
+    fn hedged_varies_and_verifies() {
+        let verifier = VerifyingKey::<U256>::from_sec1_bytes(PUB);
+        let sign = |z: &[u8]| {
+            let (mut r, mut s) = ([0u8; 32], [0u8; 32]);
+            assert!(sign_prehashed_ct_hedged::<P256, U256Ct, Hmac<Sha256>>(
+                &D, &DIGEST, z, &mut r, &mut s
+            ));
+            concat_rs(&r, &s)
+        };
+        let a = sign(&[1u8; 16]);
+        let b = sign(&[2u8; 16]);
+        assert_ne!(a, b, "different hedge entropy must change the nonce");
+        assert!(verifier.verify_prehash(&DIGEST, &a).is_ok());
+        assert!(verifier.verify_prehash(&DIGEST, &b).is_ok());
+    }
+
+    // RandomizedPrehashSigner end to end: hedged nonce + verify-after-sign,
+    // driven through the RustCrypto trait.
+    #[test]
+    fn randomized_signer_roundtrip() {
+        let signer =
+            RandomizedSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        let verifier = VerifyingKey::<U256>::from_sec1_bytes(PUB);
+
+        let sig_a: [u8; 64] = signer
+            .sign_prehash_with_rng(&mut SeqRng(0), &DIGEST)
+            .expect("sign");
+        let sig_b: [u8; 64] = signer
+            .sign_prehash_with_rng(&mut SeqRng(99), &DIGEST)
+            .expect("sign");
+        assert_ne!(
+            sig_a, sig_b,
+            "distinct rng streams must yield distinct sigs"
+        );
+        assert!(verifier.verify_prehash(&DIGEST, &sig_a).is_ok());
+        assert!(verifier.verify_prehash(&DIGEST, &sig_b).is_ok());
+
+        let mut pk = [0u8; 65];
+        assert!(signer.verifying_key_sec1(&mut pk));
+        assert_eq!(pk, PUB);
+    }
+
+    // A failing RNG surfaces as a signature error, never a panic.
+    #[test]
+    fn randomized_signer_rng_failure() {
+        let signer =
+            RandomizedSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        assert!(signer.sign_prehash_with_rng(&mut FailRng, &DIGEST).is_err());
+    }
+
+    #[test]
+    fn randomized_rejects_out_of_range_keys() {
+        type K = RandomizedSigningKey<P256, U256Ct, U256, Hmac<Sha256>>;
+        const N: [u8; 32] = hx("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
+        assert!(K::from_bytes(&[0u8; 32]).is_none());
+        assert!(K::from_bytes(&N).is_none());
+        assert!(K::from_bytes(&D).is_some());
+    }
+
+    // signature::Keypair: both signer key types expose the matching
+    // verifying key, and it accepts a signature the key produces.
+    #[test]
+    fn keypair_verifying_key() {
+        use signature::Keypair;
+
+        let det = PrehashSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        let vk = det.verifying_key();
+        assert_eq!(vk.as_sec1_bytes(), &PUB);
+        let sig: [u8; 64] = det.sign_prehash(&DIGEST).unwrap();
+        assert!(vk.verify_prehash(&DIGEST, &sig).is_ok());
+
+        let rnd = RandomizedSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        assert_eq!(rnd.verifying_key().as_sec1_bytes(), &PUB);
+    }
+
+    // DigestSigner / DigestVerifier: hash the message internally. "sample"
+    // is the RFC 6979 §A.2.5 message whose SHA-256 is DIGEST, so the
+    // hash-internally sign must reproduce the RFC signature RS.
+    #[test]
+    fn digest_signer_roundtrip() {
+        use sha2::Digest;
+        use signature::{DigestSigner, DigestVerifier};
+
+        let signer = PrehashSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        let sig: [u8; 64] = signer
+            .try_sign_digest(|d: &mut Sha256| {
+                d.update(b"sample");
+                Ok(())
+            })
+            .expect("sign");
+        assert_eq!(sig, RS);
+
+        let vk = VerifyingKey::<U256>::from_sec1_bytes(PUB);
+        assert!(
+            vk.verify_digest(
+                |d: &mut Sha256| {
+                    d.update(b"sample");
+                    Ok(())
+                },
+                &sig
+            )
+            .is_ok()
+        );
+        // A different message must not verify against this signature.
+        assert!(
+            vk.verify_digest(
+                |d: &mut Sha256| {
+                    d.update(b"other");
+                    Ok(())
+                },
+                &sig
+            )
+            .is_err()
+        );
+    }
+
+    // RandomizedDigestSigner: hash-internally + hedged nonce; the result
+    // verifies against the derived key.
+    #[test]
+    fn randomized_digest_signer_roundtrip() {
+        use sha2::Digest;
+        use signature::RandomizedDigestSigner;
+
+        let signer =
+            RandomizedSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&D).unwrap();
+        let sig: [u8; 64] = signer
+            .try_sign_digest_with_rng(&mut SeqRng(7), |d: &mut Sha256| {
+                d.update(b"sample");
+                Ok(())
+            })
+            .expect("sign");
+        let vk = VerifyingKey::<U256>::from_sec1_bytes(PUB);
+        assert!(vk.verify_prehash(&DIGEST, &sig).is_ok());
     }
 }

@@ -30,6 +30,13 @@ Two sign entry points, both constant-time:
   curves, effectively always one iteration, revealing negligible
   information about the key. That one signal is a documented
   declassification (see the ctgrind [suppressions](ct-ctgrind/ct-ctgrind.supp)).
+- **`sign_prehashed_ct_hedged`** — the hedged deterministic sign
+  (`RandomizedSigningKey`): identical to `sign_prehashed_ct` but with RFC
+  6979 §3.6 additional data (`added`) folded into the DRBG seed. `added`
+  is public (never tainted), so the same constant-time property holds; the
+  fixtures pin the §3.6 plumbing taint- and panic-clean. The
+  verify-after-sign layer is *not* covered here — it runs variable-time on
+  the public `(r, s)`, so it is not part of the CT surface.
 
 Every fixture reaches the CT surface through the public API — no
 krabiecdsa source is instrumented. The gates verify *fixture

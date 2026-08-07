@@ -30,9 +30,9 @@ cortex-m-semihosting = "0.5"
 panic-semihosting = { version = "0.6", features = ["exit"] }
 
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
-krabiecdsa = { path = "../../ecdsa", features = ["experimental-signing"] }
-hmac = { version = "0.12", default-features = false }
-sha2 = { version = "0.10", default-features = false }
+krabiecdsa = { path = "../../ecdsa" }
+hmac = { version = "0.13", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 
 [profile.release]
 codegen-units = 1
