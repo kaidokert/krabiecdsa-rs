@@ -7,7 +7,7 @@
 //! marked undefined.
 //!
 //! Everything reaches the CT surface through the public deployment API
-//! ([`krabiecdsa::dangerous::sign_prehashed_ct_with_k`]), so no
+//! ([`krabiecdsa::signing::sign_prehashed_ct_with_k`]), so no
 //! krabiecdsa source is instrumented. The one discipline these fixtures
 //! must never break: wrap every secret input and every output in
 //! [`core::hint::black_box`], or fat-LTO `opt-level="z"` folds the body
@@ -45,7 +45,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 use core::hint::black_box;
 use fixed_bigint::FixedUInt;
 use krabiecdsa::const_num_traits::Ct;
-use krabiecdsa::dangerous::sign_prehashed_ct_with_k;
+use krabiecdsa::signing::sign_prehashed_ct_with_k;
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
 
@@ -179,7 +179,7 @@ macro_rules! ct_sign_det_fixture {
             let digest = unsafe { *digest_ptr };
             let mut r = [0u8; $bytes];
             let mut s = [0u8; $bytes];
-            let ok = krabiecdsa::dangerous::sign_prehashed_ct::<$curve, $carrier, $mac>(
+            let ok = krabiecdsa::signing::sign_prehashed_ct::<$curve, $carrier, $mac>(
                 black_box(&d[..]),
                 &digest[..],
                 &mut r,
@@ -231,7 +231,7 @@ macro_rules! ct_sign_hedged_fixture {
             let added = unsafe { *added_ptr };
             let mut r = [0u8; $bytes];
             let mut s = [0u8; $bytes];
-            let ok = krabiecdsa::dangerous::sign_prehashed_ct_hedged::<$curve, $carrier, $mac>(
+            let ok = krabiecdsa::signing::sign_prehashed_ct_hedged::<$curve, $carrier, $mac>(
                 black_box(&d[..]),
                 &digest[..],
                 &added[..],

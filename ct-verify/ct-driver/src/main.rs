@@ -26,7 +26,7 @@ fn main() -> ExitCode {
                 fixture_features: &["panic-handler"],
             },
             // Legacy-mangled monomorphizations of
-            // `krabiecdsa::dangerous::scalar_mul_ct`.
+            // `krabiecdsa::signing::scalar_mul_ct`.
             default_ladder: r"scalar_mul_ct",
         },
     )

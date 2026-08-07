@@ -4,11 +4,12 @@
 //! curves: NIST P-256 ([`p256`]), secp256k1 ([`k256`]), and NIST
 //! P-384 ([`p384`]).
 //!
-//! `no_std`, no-alloc, verify-only, generic over the bigint backend:
-//! any type satisfying [`FieldFor`] + [`ScalarBytes`] and at least as wide
-//! as the curve can carry the arithmetic. This crate names no
-//! backend — the consumer brings one (a 256-bit type for P-256 /
-//! secp256k1, 384-bit for P-384; narrower fails the build):
+//! `no_std`, no-alloc, generic over the bigint backend: any type satisfying
+//! [`FieldFor`] + [`ScalarBytes`] and at least as wide as the curve can carry
+//! the arithmetic. This crate names no backend — the consumer brings one (a
+//! 256-bit type for P-256 / secp256k1, 384-bit for P-384; narrower fails the
+//! build). Verification is the core; constant-time signing lives in the
+//! [`signing`] module (see its side-channel scope notes):
 //!
 //! ```
 //! use krabiecdsa::p256;
@@ -42,7 +43,7 @@ pub use modmath;
 /// The byte-and-shift surface the personality-agnostic scalar helpers
 /// (`from_be`, `to_be`, `hash_to_scalar`, `lt`, `bit`) need. Both the
 /// Nct verify backend and the Ct signing backend
-/// ([`dangerous::ConstantTimeInt`]) carry these, so the helpers are
+/// ([`signing::ConstantTimeInt`]) carry these, so the helpers are
 /// written once against this subset and reused by both.
 pub trait ScalarBytes:
     Clone
@@ -336,12 +337,11 @@ macro_rules! define_curve {
             /// `r || s` (fixed `2·ELEM_BYTES`), RFC 6979-deterministic.
             /// The whole deterministic sign — nonce derivation included —
             /// is constant-time up to RFC 6979's inherent rejection-loop
-            /// count. Experimental — see [`dangerous`](crate::dangerous).
-            #[cfg(feature = "experimental-signing")]
+            /// count.
             impl<Tct, Tv, M> signature::hazmat::PrehashSigner<[u8; 2 * $eb]>
-                for crate::dangerous::PrehashSigningKey<$marker, Tct, Tv, M>
+                for crate::signing::PrehashSigningKey<$marker, Tct, Tv, M>
             where
-                Tct: crate::dangerous::ConstantTimeInt,
+                Tct: crate::signing::ConstantTimeInt,
                 Tv: FieldFor + ScalarBytes,
                 M: digest::KeyInit + digest::Mac,
             {
@@ -361,11 +361,10 @@ macro_rules! define_curve {
 
             /// [`signature::Keypair`]: the deterministic signer's
             /// associated verifying key (over the `Tv` verify backend).
-            #[cfg(feature = "experimental-signing")]
             impl<Tct, Tv, M> signature::Keypair
-                for crate::dangerous::PrehashSigningKey<$marker, Tct, Tv, M>
+                for crate::signing::PrehashSigningKey<$marker, Tct, Tv, M>
             where
-                Tct: crate::dangerous::ConstantTimeInt,
+                Tct: crate::signing::ConstantTimeInt,
                 Tv: FieldFor + ScalarBytes,
                 M: digest::KeyInit + digest::Mac,
             {
@@ -381,11 +380,10 @@ macro_rules! define_curve {
 
             /// [`signature::Keypair`]: the randomized signer's associated
             /// verifying key (over the `Tv` verify backend).
-            #[cfg(feature = "experimental-signing")]
             impl<Tct, Tv, M> signature::Keypair
-                for crate::dangerous::RandomizedSigningKey<$marker, Tct, Tv, M>
+                for crate::signing::RandomizedSigningKey<$marker, Tct, Tv, M>
             where
-                Tct: crate::dangerous::ConstantTimeInt,
+                Tct: crate::signing::ConstantTimeInt,
                 Tv: FieldFor + ScalarBytes,
                 M: digest::KeyInit + digest::Mac,
             {
@@ -402,14 +400,11 @@ macro_rules! define_curve {
             /// RustCrypto randomized signer: draws fresh entropy from
             /// `rng`, hedges the RFC 6979 nonce with it (§3.6), and runs a
             /// verify-after-sign fault check before returning the P1363
-            /// `r || s`. Requires `signature`'s `rand_core` feature, which
-            /// `experimental-signing` enables. Experimental — see
-            /// [`dangerous`](crate::dangerous).
-            #[cfg(feature = "experimental-signing")]
+            /// `r || s`.
             impl<Tct, Tv, M> signature::hazmat::RandomizedPrehashSigner<[u8; 2 * $eb]>
-                for crate::dangerous::RandomizedSigningKey<$marker, Tct, Tv, M>
+                for crate::signing::RandomizedSigningKey<$marker, Tct, Tv, M>
             where
-                Tct: crate::dangerous::ConstantTimeInt,
+                Tct: crate::signing::ConstantTimeInt,
                 Tv: FieldFor + ScalarBytes,
                 M: digest::KeyInit + digest::Mac,
             {
@@ -439,13 +434,12 @@ macro_rules! define_curve {
             /// [`signature::DigestSigner`]: hash the message into `D`
             /// internally (the closure feeds it), then deterministically
             /// sign the digest. Needs `signature`'s `digest` feature, which
-            /// `experimental-signing` enables.
-            #[cfg(feature = "experimental-signing")]
+            /// `signing` enables.
             impl<Tct, Tv, M, D> signature::DigestSigner<D, [u8; 2 * $eb]>
-                for crate::dangerous::PrehashSigningKey<$marker, Tct, Tv, M>
+                for crate::signing::PrehashSigningKey<$marker, Tct, Tv, M>
             where
                 D: digest::Digest + digest::Update,
-                Tct: crate::dangerous::ConstantTimeInt,
+                Tct: crate::signing::ConstantTimeInt,
                 Tv: FieldFor + ScalarBytes,
                 M: digest::KeyInit + digest::Mac,
             {
@@ -469,12 +463,11 @@ macro_rules! define_curve {
             /// [`signature::RandomizedDigestSigner`]: the hedged analogue —
             /// hash into `D`, then hedged-sign the digest with entropy from
             /// `rng`.
-            #[cfg(feature = "experimental-signing")]
             impl<Tct, Tv, M, D> signature::RandomizedDigestSigner<D, [u8; 2 * $eb]>
-                for crate::dangerous::RandomizedSigningKey<$marker, Tct, Tv, M>
+                for crate::signing::RandomizedSigningKey<$marker, Tct, Tv, M>
             where
                 D: digest::Digest + digest::Update,
-                Tct: crate::dangerous::ConstantTimeInt,
+                Tct: crate::signing::ConstantTimeInt,
                 Tv: FieldFor + ScalarBytes,
                 M: digest::KeyInit + digest::Mac,
             {
@@ -498,8 +491,7 @@ macro_rules! define_curve {
             /// [`signature::DigestVerifier`]: hash the message into `D`
             /// internally, then verify the P1363 `signature` over the
             /// digest. Rides the `digest` feature enabled by
-            /// `experimental-signing`.
-            #[cfg(feature = "experimental-signing")]
+            /// `signing`.
             impl<T, D, S> signature::DigestVerifier<D, S> for VerifyingKey<T>
             where
                 T: FieldFor + ScalarBytes,
@@ -876,7 +868,7 @@ pub fn verify_for_curve<C: Curve, T: FieldFor + ScalarBytes>(
 /// Montgomery field. Verify is public data, so the variable-time field
 /// is a correctness-equivalent footprint/allocation trade. The carrier
 /// physically cannot reach any constant-time (sign) path — it isn't
-/// `Copy`, so it can never be a [`dangerous::ConstantTimeInt`].
+/// `Copy`, so it can never be a [`signing::ConstantTimeInt`].
 #[must_use]
 pub fn verify_for_curve_ref<C: Curve, T>(pubkey: &[u8], digest: &[u8], r: &[u8], s: &[u8]) -> bool
 where
@@ -981,39 +973,32 @@ where
     fn_.reduce(&x_affine) == r_res
 }
 
-/// **Experimental ECDSA signing — NOT production-safe. Do not use on
-/// real keys.**
-///
-/// Off by default behind the `experimental-signing` cargo feature and
-/// gated behind this deliberately-named module. Every signer here runs the
-/// secret operations on the constant-time (`Ct`) modmath surface — RCB
+/// Constant-time ECDSA signing. Every signer runs the secret operations on
+/// the constant-time (`Ct`) modmath surface — RCB
 /// complete formulas, a branch-free double-and-add-always ladder, and a
-/// Fermat inverse — via [`dangerous::sign_prehashed_ct`],
-/// [`dangerous::SigningKey`], [`dangerous::PrehashSigningKey`], and the
-/// hedged [`dangerous::RandomizedSigningKey`]. The deterministic paths are
-/// constant-time up to RFC 6979's inherent rejection-loop count.
+/// Fermat inverse — via [`signing::sign_prehashed_ct`],
+/// [`signing::SigningKey`], [`signing::PrehashSigningKey`], and the hedged
+/// [`signing::RandomizedSigningKey`]. The deterministic paths are
+/// constant-time up to RFC 6979's inherent rejection-loop count, validated
+/// against the RFC/CAVP vectors, cross-checked with openssl, and attested by
+/// the repository's ct-verify harness (ctgrind taint + asm-ladder audit).
+///
+/// # Side-channel scope
 ///
 /// The constant-time guarantee is **timing only**. It does NOT cover:
 ///
-/// - **Power / EM side channels (DPA/CPA).** There is no scalar blinding
-///   or projective-coordinate randomization, so a physical attacker with
-///   trace access is not defended. [`dangerous::RandomizedSigningKey`]
-///   hedges the nonce (fresh entropy per signature, RFC 6979 §3.6) and
-///   runs a verify-after-sign fault check — defeating same-message trace
+/// - **Power / EM side channels (DPA/CPA).** There is no scalar blinding or
+///   projective-coordinate randomization, so an attacker with power/EM trace
+///   access to the device is not defended. [`signing::RandomizedSigningKey`]
+///   hedges the nonce (fresh entropy per signature, RFC 6979 §3.6) and runs
+///   a verify-after-sign fault check — defeating same-message trace
 ///   averaging and the deterministic-ECDSA fault break — but that is
-///   defense-in-depth, not DPA resistance.
-/// - **Comprehensive fault attacks.** Only the randomized path
-///   re-verifies its own output.
-///
-/// And, gating everything:
-///
-/// - **Unaudited.** Correctness is pinned to RFC 6979 fixed vectors and
-///   the timing property to the ct-verify harness; neither is a physical
-///   side-channel evaluation.
-///
-/// Until an audit says otherwise, this stays behind the feature gate.
-#[cfg(feature = "experimental-signing")]
-pub mod dangerous {
+///   defense-in-depth, not DPA resistance. Blinding is planned as a
+///   follow-up; until then, deployments exposed to a physical attacker
+///   should account for this.
+/// - **Comprehensive fault attacks.** Only the randomized path re-verifies
+///   its own output.
+pub mod signing {
     use super::*;
     use zeroize::{Zeroize, Zeroizing};
 
@@ -1082,7 +1067,7 @@ pub mod dangerous {
     ///
     /// Constant-time-ness follows the caller's `in_range` predicate; the
     /// only secret-dependent branch is the rejection-loop count, RFC
-    /// 6979's inherent signal (experimental — see the [module warning](self)).
+    /// 6979's inherent signal.
     // Distinct symbol so the ct-verify taint gate can scope the
     // rejection-loop-count declassification to this frame — see `add_rcb`.
     #[inline(never)]
@@ -1174,8 +1159,7 @@ pub mod dangerous {
     ///
     /// **`test-vectors` only.** Exposing the derived nonce is a
     /// known-answer-test aid, not a production operation (a signer never
-    /// needs the raw `k`); gated behind the `test-vectors` feature. Same
-    /// experimental caveats as the rest of this module.
+    /// needs the raw `k`); gated behind the `test-vectors` feature.
     #[cfg(feature = "test-vectors")]
     #[must_use]
     pub fn derive_nonce_rfc6979_ct<
@@ -1456,8 +1440,6 @@ pub mod dangerous {
     /// this exists to reproduce known-answer vectors and is gated behind the
     /// `test-vectors` feature. Production signs via the `PrehashSigner` /
     /// `RandomizedPrehashSigner` traits (RFC 6979, nonce derived internally).
-    ///
-    /// Experimental — see the [module warning](self).
     #[cfg(feature = "test-vectors")]
     #[must_use]
     pub fn sign_prehashed_ct_with_k<C: Curve, T: ConstantTimeInt>(
@@ -1557,8 +1539,6 @@ pub mod dangerous {
     /// signature math (RCB scalar multiply + `k⁻¹`) runs constant-time.
     /// `M` is the HMAC whose hash matches
     /// the digest's (e.g. `Hmac<Sha256>` for a SHA-256 digest).
-    ///
-    /// Experimental — see the [module warning](self).
     #[must_use]
     pub fn sign_prehashed_ct<C: Curve, Tct: ConstantTimeInt, M: digest::KeyInit + digest::Mac>(
         private_key: &[u8],
@@ -1579,8 +1559,6 @@ pub mod dangerous {
     /// trace averaging and the deterministic-ECDSA fault break. The
     /// entropy is public (not secret), so the derivation stays
     /// constant-time.
-    ///
-    /// Experimental — see the [module warning](self).
     #[must_use]
     pub fn sign_prehashed_ct_hedged<
         C: Curve,
@@ -1630,8 +1608,6 @@ pub mod dangerous {
     /// signature is emitted. `Tv` is an ordinary (non-Ct) verify backend
     /// (`FieldFor + ScalarBytes`), distinct from the Ct signing backend
     /// `Tct`.
-    ///
-    /// Experimental — see the [module warning](self).
     #[must_use]
     pub fn sign_prehashed_ct_hedged_verified<
         C: Curve,
@@ -1743,8 +1719,6 @@ pub mod dangerous {
     /// scalar is stored as bytes rather than a typed `T` so the struct
     /// stays free of a backend type parameter — same reason ed25519's
     /// `SigningKey` stores its clamped scalar as bytes.
-    ///
-    /// Experimental — see the [module warning](self).
     pub struct SigningKey<C: Curve> {
         d: Zeroizing<[u8; MAX_ELEM]>,
         _c: core::marker::PhantomData<fn() -> C>,
@@ -1847,8 +1821,6 @@ pub mod dangerous {
     /// and secret math both), `Tv` the variable-time verify backend (used
     /// only by the [`signature::Keypair`] impl to name the public-key
     /// type), and `M` the HMAC.
-    ///
-    /// Experimental — see the [module warning](self).
     pub struct PrehashSigningKey<C: Curve, Tct, Tv, M> {
         key: SigningKey<C>,
         _p: RandBackendMarker<Tct, Tv, M>,
@@ -1905,8 +1877,6 @@ pub mod dangerous {
     /// hardened counterpart to the deterministic [`PrehashSigningKey`].
     /// `Tv` is a normal (non-Ct) backend, used only for the post-sign
     /// verification whose inputs are public.
-    ///
-    /// Experimental — see the [module warning](self).
     pub struct RandomizedSigningKey<C: Curve, Tct, Tv, M> {
         key: SigningKey<C>,
         // SEC1 `0x04 || X || Y` for the verify-after-sign check, derived

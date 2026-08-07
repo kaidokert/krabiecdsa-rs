@@ -3,42 +3,30 @@ name = "krabiecdsa"
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.87"
-description = "ECDSA signature verification for P-256, secp256k1, and P-384 — no_std, no-alloc, generic over the bigint backend via modmath"
+description = "ECDSA signature verification and signing for P-256, secp256k1, and P-384 — no_std, no-alloc, generic over the bigint backend via modmath"
 license = "Apache-2.0"
 readme = "../README.md"
 repository = "https://github.com/kaidokert/krabiecdsa-rs"
 keywords = ["ecdsa", "p256", "secp256k1", "no_std", "embedded"]
 categories = ["cryptography", "no-std", "no-std::no-alloc", "embedded"]
 
-# Build docs with the signer visible (the `dangerous` module + its RustCrypto
-# trait impls are gated behind `experimental-signing`, so the default build
-# would document verify-only). Not `test-vectors` — the hazmat KAT primitives
-# stay out of the rendered API.
-[package.metadata.docs.rs]
-features = ["experimental-signing"]
-
 [dependencies]
 modmath = "0.6.1"
 const-num-traits = { version = "0.2.1", default-features = false, features = ["ct"] }
-signature = { version = "3.0", default-features = false }
+signature = { version = "3.0", default-features = false, features = ["rand_core", "digest"] }
 zeroize = { version = "1", default-features = false }
-digest = { version = "0.11", default-features = false, features = ["mac"], optional = true }
+digest = { version = "0.11", default-features = false, features = ["mac"] }
 subtle = { version = "2.6", default-features = false }
 
 [features]
-# EXPERIMENTAL, off by default: ECDSA signing (see the `dangerous` module).
-# Not covered by semver and not for production use. The sign path is now
-# constant-time and RFC 6979-deterministic; the name stays `experimental-`
-# until it is independently audited. The no-feature build carries none of it
-# and stays verify-only.
-experimental-signing = ["dep:digest", "signature/rand_core", "signature/digest"]
 # Exposes the hazmat known-answer-test primitives — sign-with-caller-nonce
 # (`sign_prehashed_ct_with_k`) and raw nonce derivation
 # (`derive_nonce_rfc6979_ct`). Neither is a production operation (an explicit
-# or exposed nonce is a key-leak footgun); they exist to reproduce RFC/CAVP
-# vectors and are consumed by the integration tests and the ct-verify
-# harness. Default off; implies `experimental-signing`.
-test-vectors = ["experimental-signing"]
+# or exposed nonce is a key-leak footgun), so they stay out of the default
+# API; they exist only to reproduce RFC/CAVP vectors and are enabled by the
+# integration tests and the ct-verify harness. Signing itself is always
+# available — no feature needed.
+test-vectors = []
 
 [dev-dependencies]
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["cios", "zeroize"] }

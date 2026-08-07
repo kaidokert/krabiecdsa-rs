@@ -21,14 +21,14 @@ mod neg_controls;
 use core::hint::black_box;
 use fixed_bigint::FixedUInt;
 use krabiecdsa::const_num_traits::Ct;
-use krabiecdsa::dangerous::sign_prehashed_ct_with_k;
+use krabiecdsa::signing::sign_prehashed_ct_with_k;
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
 
 #[cfg(feature = "deterministic")]
 use hmac::Hmac;
 #[cfg(feature = "deterministic")]
-use krabiecdsa::dangerous::{sign_prehashed_ct, sign_prehashed_ct_hedged};
+use krabiecdsa::signing::{sign_prehashed_ct, sign_prehashed_ct_hedged};
 #[cfg(feature = "deterministic")]
 use sha2::{Sha256, Sha384};
 

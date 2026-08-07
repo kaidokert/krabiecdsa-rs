@@ -12,13 +12,11 @@
 //! (NIST CAVP SigGen is *not* usable here: its ECDSA vectors withhold
 //! `d`/`k`, so a deterministic signer cannot reproduce their `r`/`s`.)
 
-#![cfg(feature = "experimental-signing")]
-
 use hmac::Hmac;
 use krabiecdsa::const_num_traits::Ct;
-use krabiecdsa::dangerous::{ConstantTimeInt, sign_prehashed_ct};
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
+use krabiecdsa::signing::{ConstantTimeInt, sign_prehashed_ct};
 use krabiecdsa::{Curve, FieldFor, ScalarBytes, verify_for_curve};
 use sha2::{Sha256, Sha384};
 

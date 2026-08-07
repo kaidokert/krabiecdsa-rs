@@ -12,11 +12,11 @@ use krabi_caliper::report::Field;
 use krabi_caliper::stack::{StackProbe, paint_cortex_m_runtime};
 use krabi_caliper::suite::{PairedSuite, PairedSuiteConfig, PairedSuiteFields};
 use krabiecdsa::const_num_traits::Ct;
-use krabiecdsa::dangerous::SigningKey;
+use krabiecdsa::signing::SigningKey;
 #[cfg(feature = "fix-nonce")]
-use krabiecdsa::dangerous::derive_nonce_rfc6979_ct;
+use krabiecdsa::signing::derive_nonce_rfc6979_ct;
 #[cfg(feature = "fix-fixedsign")]
-use krabiecdsa::dangerous::sign_prehashed_ct_with_k;
+use krabiecdsa::signing::sign_prehashed_ct_with_k;
 use krabiecdsa::p256::{self, P256};
 use sha2::Sha256;
 use stm32f4xx_hal::pac;

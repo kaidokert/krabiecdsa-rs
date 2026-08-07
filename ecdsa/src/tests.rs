@@ -532,11 +532,10 @@ mod p384_tests {
 
 // RustCrypto PrehashSigner round-trip: our signer produces the RFC
 // 6979 signature via the trait, our PrehashVerifier accepts it.
-#[cfg(feature = "experimental-signing")]
 mod rustcrypto_signing {
     use super::*;
-    use crate::dangerous::PrehashSigningKey;
     use crate::p256::{P256, VerifyingKey};
+    use crate::signing::PrehashSigningKey;
     use hmac::Hmac;
     use sha2::Sha256;
     use signature::hazmat::{PrehashSigner, PrehashVerifier};
@@ -581,7 +580,7 @@ mod rustcrypto_signing {
         assert!(K::from_bytes(&D).is_some());
     }
 
-    use crate::dangerous::{RandomizedSigningKey, sign_prehashed_ct, sign_prehashed_ct_hedged};
+    use crate::signing::{RandomizedSigningKey, sign_prehashed_ct, sign_prehashed_ct_hedged};
     use signature::hazmat::RandomizedPrehashSigner;
 
     fn concat_rs(r: &[u8; 32], s: &[u8; 32]) -> [u8; 64] {

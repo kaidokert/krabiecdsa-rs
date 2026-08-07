@@ -14,17 +14,17 @@
 //! variable-time verify path (its inputs are public).
 
 // Uses the hazmat known-answer-test primitives (sign-with-k, raw nonce
-// derivation), so it needs `test-vectors`, not just `experimental-signing`.
+// derivation), so it needs `test-vectors`, not just `signing`.
 #![cfg(feature = "test-vectors")]
 
 use hmac::Hmac;
 use krabiecdsa::const_num_traits::Ct;
-use krabiecdsa::dangerous::{
+use krabiecdsa::p256::P256;
+use krabiecdsa::p384::P384;
+use krabiecdsa::signing::{
     ConstantTimeInt, SigningKey, derive_nonce_rfc6979_ct, sign_prehashed_ct,
     sign_prehashed_ct_with_k,
 };
-use krabiecdsa::p256::P256;
-use krabiecdsa::p384::P384;
 use krabiecdsa::{Curve, FieldFor, ScalarBytes, verify_for_curve};
 use sha2::{Sha256, Sha384, Sha512};
 
