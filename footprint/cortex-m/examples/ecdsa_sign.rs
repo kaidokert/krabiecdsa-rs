@@ -1,7 +1,8 @@
 //! ECDSA signing footprint (P-256, u32, RFC 6979). Measures the
 //! incremental cost of one `SigningKey::sign_prehashed` over the shared
 //! baseline. The whole deterministic sign — RFC 6979 nonce derivation
-//! included — runs constant-time on the `Ct` backend.
+//! included — runs constant-time on the `Ct` backend, up to RFC 6979's
+//! inherent rejection-loop count (the one declassified signal).
 
 #![no_main]
 #![no_std]
