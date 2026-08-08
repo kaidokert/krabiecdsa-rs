@@ -1,5 +1,5 @@
 //! RFC 6979 signing vectors — the fixed set validating the
-//! constant-time experimental signer. Two layers:
+//! constant-time signer. Two layers:
 //!
 //! - the low-level `sign_prehashed_ct_with_k` fed the RFC's own `k`, to
 //!   pin the pure ECDSA math (§A.2.5, P-256/SHA-256);
@@ -22,7 +22,7 @@ use krabiecdsa::const_num_traits::Ct;
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
 use krabiecdsa::signing::{
-    ConstantTimeInt, SigningKey, derive_nonce_rfc6979_ct, sign_prehashed_ct,
+    ConstantTimeInt, PrehashSigningKey, derive_nonce_rfc6979_ct, sign_prehashed_ct,
     sign_prehashed_ct_with_k,
 };
 use krabiecdsa::{Curve, FieldFor, ScalarBytes, verify_for_curve};
@@ -189,22 +189,23 @@ fn deterministic_p384_sha384() {
     );
 }
 
-// SigningKey: owns the secret (Zeroizing), signs via the CT path, and
-// derives its own public key.
+// PrehashSigningKey: owns the secret (Zeroizing), signs via the CT path,
+// and derives its own public key. Backends bound in the type (`Tct` Ct
+// sign, `Tv` vartime verify), so the calls take no turbofish.
 
 #[test]
 fn signing_key_p256() {
-    let key = SigningKey::<P256>::from_bytes(&hx(D256)).unwrap();
+    let key = PrehashSigningKey::<P256, U256Ct, U256, Hmac<Sha256>>::from_bytes(&hx(D256)).unwrap();
     // derives the RFC public key
     let mut pk = [0u8; 65];
-    assert!(key.verifying_key_sec1::<U256Ct>(&mut pk));
+    assert!(key.verifying_key_sec1(&mut pk));
     assert_eq!(pk.to_vec(), pubkey(QX256, QY256));
     // signs the RFC vectors
     for v in P256_SHA256 {
         let digest = hx(v.digest);
         let mut r = [0u8; 32];
         let mut s = [0u8; 32];
-        assert!(key.sign_prehashed::<U256Ct, Hmac<Sha256>>(&digest, &mut r, &mut s));
+        assert!(key.sign_prehashed(&digest, &mut r, &mut s));
         assert_eq!(r.to_vec(), hx(v.r));
         assert_eq!(s.to_vec(), hx(v.s));
         assert!(verify_for_curve::<P256, U256>(&pk, &digest, &r, &s));
@@ -213,15 +214,15 @@ fn signing_key_p256() {
 
 #[test]
 fn signing_key_p384() {
-    let key = SigningKey::<P384>::from_bytes(&hx(D384)).unwrap();
+    let key = PrehashSigningKey::<P384, U384Ct, U384, Hmac<Sha384>>::from_bytes(&hx(D384)).unwrap();
     let mut pk = [0u8; 97];
-    assert!(key.verifying_key_sec1::<U384Ct>(&mut pk));
+    assert!(key.verifying_key_sec1(&mut pk));
     assert_eq!(pk.to_vec(), pubkey(QX384, QY384));
     let v = &P384_SHA384[0];
     let digest = hx(v.digest);
     let mut r = [0u8; 48];
     let mut s = [0u8; 48];
-    assert!(key.sign_prehashed::<U384Ct, Hmac<Sha384>>(&digest, &mut r, &mut s));
+    assert!(key.sign_prehashed(&digest, &mut r, &mut s));
     assert_eq!(r.to_vec(), hx(v.r));
     assert_eq!(s.to_vec(), hx(v.s));
     assert!(verify_for_curve::<P384, U384>(&pk, &digest, &r, &s));
@@ -229,30 +230,24 @@ fn signing_key_p384() {
 
 #[test]
 fn signing_key_wrong_length_rejected() {
-    assert!(SigningKey::<P256>::from_bytes(&hx(D256)[..31]).is_none());
-    let n = hx("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
+    type K = PrehashSigningKey<P256, U256Ct, U256, Hmac<Sha256>>;
     let digest = hx(P256_SHA256[0].digest);
+    let n = hx("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
 
-    // Out-of-range scalars are accepted at construction (length is the
-    // only constructor check) but rejected in constant time at use —
-    // both the low `d = 0` and the high `d = n` boundary.
-    for bad in [[0u8; 32].as_slice(), n.as_slice()] {
-        let key = SigningKey::<P256>::from_bytes(bad).unwrap();
-        let mut pk = [0u8; 65];
-        assert!(!key.verifying_key_sec1::<U256Ct>(&mut pk));
-        let mut r = [0u8; 32];
-        let mut s = [0u8; 32];
-        assert!(!key.sign_prehashed::<U256Ct, Hmac<Sha256>>(&digest, &mut r, &mut s));
-    }
+    // Wrong length and out-of-range scalars (low `d = 0`, high `d = n`) are
+    // rejected eagerly at construction (constant-time range check).
+    assert!(K::from_bytes(&hx(D256)[..31]).is_none());
+    assert!(K::from_bytes(&[0u8; 32]).is_none());
+    assert!(K::from_bytes(&n).is_none());
 
     // Wrong output-buffer lengths are rejected for an otherwise valid key.
-    let key = SigningKey::<P256>::from_bytes(&hx(D256)).unwrap();
-    assert!(!key.verifying_key_sec1::<U256Ct>(&mut [0u8; 64]));
-    assert!(!key.verifying_key_sec1::<U256Ct>(&mut [0u8; 66]));
+    let key = K::from_bytes(&hx(D256)).unwrap();
+    assert!(!key.verifying_key_sec1(&mut [0u8; 64]));
+    assert!(!key.verifying_key_sec1(&mut [0u8; 66]));
     let mut r = [0u8; 32];
     let mut s = [0u8; 32];
-    assert!(!key.sign_prehashed::<U256Ct, Hmac<Sha256>>(&digest, &mut r[..31], &mut s));
-    assert!(!key.sign_prehashed::<U256Ct, Hmac<Sha256>>(&digest, &mut r, &mut s[..31]));
+    assert!(!key.sign_prehashed(&digest, &mut r[..31], &mut s));
+    assert!(!key.sign_prehashed(&digest, &mut r, &mut s[..31]));
 }
 
 #[test]

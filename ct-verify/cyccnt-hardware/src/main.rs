@@ -12,7 +12,7 @@ use krabi_caliper::report::Field;
 use krabi_caliper::stack::{StackProbe, paint_cortex_m_runtime};
 use krabi_caliper::suite::{PairedSuite, PairedSuiteConfig, PairedSuiteFields};
 use krabiecdsa::const_num_traits::Ct;
-use krabiecdsa::signing::SigningKey;
+use krabiecdsa::signing::PrehashSigningKey;
 #[cfg(feature = "fix-nonce")]
 use krabiecdsa::signing::derive_nonce_rfc6979_ct;
 #[cfg(feature = "fix-fixedsign")]
@@ -70,7 +70,7 @@ type Nct = FixedUInt<u64, 4>;
 #[cfg(feature = "carrier-u64x4")]
 const CARRIER: &str = "u64x4";
 
-type P256SigningKey = SigningKey<P256>;
+type P256SigningKey = PrehashSigningKey<P256, CtBackend, Nct, Hmac<Sha256>>;
 
 // Two independently generated, openssl-verified private scalars from the
 // crate's cross-implementation test vectors.
@@ -147,7 +147,7 @@ fn fixed_nonce_sign_once(key: &[u8; 32]) -> bool {
 fn whole_sign_once(key: &P256SigningKey) -> bool {
     let mut r = [0u8; 32];
     let mut s = [0u8; 32];
-    let ok = black_box(key).sign_prehashed::<CtBackend, Hmac<Sha256>>(
+    let ok = black_box(key).sign_prehashed(
         black_box(&DIGEST),
         &mut r,
         &mut s,
@@ -159,7 +159,7 @@ fn whole_sign_once(key: &P256SigningKey) -> bool {
 #[cfg(feature = "fix-keygen")]
 fn keygen_once(key: &P256SigningKey) -> bool {
     let mut pubkey = [0u8; 65];
-    let ok = black_box(key).verifying_key_sec1::<CtBackend>(&mut pubkey);
+    let ok = black_box(key).verifying_key_sec1(&mut pubkey);
     let _ = black_box(pubkey);
     ok
 }
@@ -194,8 +194,8 @@ fn preflight(key_bytes: &[u8; 32]) -> Option<P256SigningKey> {
     let mut pubkey = [0u8; 65];
     let mut r = [0u8; 32];
     let mut s = [0u8; 32];
-    if !key.verifying_key_sec1::<CtBackend>(&mut pubkey)
-        || !key.sign_prehashed::<CtBackend, Hmac<Sha256>>(&DIGEST, &mut r, &mut s)
+    if !key.verifying_key_sec1(&mut pubkey)
+        || !key.sign_prehashed(&DIGEST, &mut r, &mut s)
         || !p256::verify_prehashed::<Nct>(&pubkey, &DIGEST, &r, &s)
     {
         return None;
