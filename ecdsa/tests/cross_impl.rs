@@ -16,7 +16,7 @@ use hmac::Hmac;
 use krabiecdsa::const_num_traits::Ct;
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
-use krabiecdsa::signing::{ConstantTimeInt, sign_prehashed_ct};
+use krabiecdsa::signing::{ConstantTimeInt, PrehashSigningKey};
 use krabiecdsa::{Curve, FieldFor, ScalarBytes, verify_for_curve};
 use sha2::{Sha256, Sha384};
 
@@ -91,11 +91,10 @@ where
         let pk = hx(v.pubkey);
         let (want_r, want_s) = (hx(v.r), hx(v.s));
 
+        let signer = PrehashSigningKey::<C, Tct, Tv, M>::from_bytes(&d).unwrap();
         let mut rc = vec![0u8; C::ELEM_BYTES];
         let mut sc = vec![0u8; C::ELEM_BYTES];
-        assert!(sign_prehashed_ct::<C, Tct, M>(
-            &d, &digest, &mut rc, &mut sc
-        ));
+        assert!(signer.sign_prehashed(&digest, &mut rc, &mut sc));
         assert_eq!(rc, want_r, "ct r mismatch");
         assert_eq!(sc, want_s, "ct s mismatch");
 
