@@ -976,8 +976,7 @@ where
 /// Constant-time ECDSA signing. Every signer runs the secret operations on
 /// the constant-time (`Ct`) modmath surface — RCB
 /// complete formulas, a branch-free double-and-add-always ladder, and a
-/// Fermat inverse — via [`signing::SigningKey`],
-/// [`signing::PrehashSigningKey`], and the hedged
+/// Fermat inverse — via [`signing::PrehashSigningKey`] and the hedged
 /// [`signing::RandomizedSigningKey`]. The deterministic paths are
 /// constant-time up to RFC 6979's inherent rejection-loop count, validated
 /// against the RFC/CAVP vectors, cross-checked with openssl, and attested by
@@ -1657,16 +1656,15 @@ pub mod signing {
     /// `SigningKey` byte buffer is sized to it and sliced per curve.
     const MAX_ELEM: usize = 48;
 
-    /// An ECDSA private scalar that **wipes itself on drop**. Owning
-    /// the key in this wrapper (rather than passing raw `&[u8]`) keeps
-    /// the secret in a `Zeroizing` buffer for its whole lifetime.
+    /// Internal ECDSA private-scalar holder that **wipes itself on drop**
+    /// (`Zeroizing` for its whole lifetime). Curve-fixed (`C`); the
+    /// arithmetic backends are chosen per call, so the scalar is stored as
+    /// bytes and the struct stays free of a backend type parameter.
     ///
-    /// Curve-fixed (`C`); the arithmetic backends are chosen per call,
-    /// since the key material is personality-agnostic bytes. The
-    /// scalar is stored as bytes rather than a typed `T` so the struct
-    /// stays free of a backend type parameter — same reason ed25519's
-    /// `SigningKey` stores its clamped scalar as bytes.
-    pub struct SigningKey<C: Curve> {
+    /// Not public: the public signing keys ([`PrehashSigningKey`],
+    /// [`RandomizedSigningKey`]) wrap this and bind the backends in the type
+    /// so they can carry the RustCrypto trait impls.
+    pub(crate) struct SigningKey<C: Curve> {
         d: Zeroizing<[u8; MAX_ELEM]>,
         _c: core::marker::PhantomData<fn() -> C>,
     }
@@ -1763,7 +1761,7 @@ pub mod signing {
     /// struct fields readable. `Tct` Ct sign / `Tv` vartime verify / `M` HMAC.
     type RandBackendMarker<Tct, Tv, M> = core::marker::PhantomData<fn() -> (Tct, Tv, M)>;
 
-    /// A [`SigningKey`] with its backend and HMAC bound, so it can
+    /// A `SigningKey` with its backend and HMAC bound, so it can
     /// carry the RustCrypto `signature::hazmat::PrehashSigner` impl
     /// (which has no room for per-call type parameters). The impl is
     /// emitted per curve because the signature is a fixed
@@ -1785,9 +1783,9 @@ pub mod signing {
         M: digest::KeyInit + digest::Mac,
     > PrehashSigningKey<C, Tct, Tv, M>
     {
-        /// Wrap a private scalar (see [`SigningKey::from_bytes`]).
+        /// Wrap a private scalar (see `SigningKey::from_bytes`).
         ///
-        /// Unlike [`SigningKey`] — whose backend is bound late, at sign
+        /// Unlike `SigningKey` — whose backend is bound late, at sign
         /// time — this key is fully monomorphized over the Ct backend
         /// `Tct`, so it can reject `d ∉ [1, n-1]` eagerly here. The check
         /// runs in constant time (the scalar is secret); it returns
@@ -1807,21 +1805,21 @@ pub mod signing {
             })
         }
 
-        /// Sign into `out_r` / `out_s` (see [`SigningKey::sign_prehashed`]).
+        /// Sign into `out_r` / `out_s` (see `SigningKey::sign_prehashed`).
         #[must_use]
         pub fn sign_prehashed(&self, digest: &[u8], out_r: &mut [u8], out_s: &mut [u8]) -> bool {
             self.key.sign_prehashed::<Tct, M>(digest, out_r, out_s)
         }
 
         /// Derive the SEC1 public key (see
-        /// [`SigningKey::verifying_key_sec1`]).
+        /// `SigningKey::verifying_key_sec1`).
         #[must_use]
         pub fn verifying_key_sec1(&self, out: &mut [u8]) -> bool {
             self.key.verifying_key_sec1::<Tct>(out)
         }
     }
 
-    /// A [`SigningKey`] bound to a Ct signing backend `Tct`, a
+    /// A `SigningKey` bound to a Ct signing backend `Tct`, a
     /// variable-time verify backend `Tv`, and an HMAC `M`, carrying the
     /// RustCrypto [`signature::hazmat::RandomizedPrehashSigner`] impl.
     /// Its sign path is **hedged** (fresh entropy folded into the RFC
@@ -1894,7 +1892,7 @@ pub mod signing {
         }
 
         /// Derive the SEC1 public key (see
-        /// [`SigningKey::verifying_key_sec1`]).
+        /// `SigningKey::verifying_key_sec1`).
         #[must_use]
         pub fn verifying_key_sec1(&self, out: &mut [u8]) -> bool {
             self.key.verifying_key_sec1::<Tct>(out)

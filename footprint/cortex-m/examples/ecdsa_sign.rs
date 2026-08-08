@@ -1,5 +1,5 @@
 //! ECDSA signing footprint (P-256, u32, RFC 6979). Measures the
-//! incremental cost of one `SigningKey::sign_prehashed` over the shared
+//! incremental cost of one `PrehashSigningKey::sign_prehashed` over the shared
 //! baseline. The whole deterministic sign — RFC 6979 nonce derivation
 //! included — runs constant-time on the `Ct` backend, up to RFC 6979's
 //! inherent rejection-loop count (the one declassified signal).
@@ -11,7 +11,7 @@ use cortex_m_rt::entry;
 use fixed_bigint::FixedUInt;
 use hmac::Hmac;
 use krabiecdsa::const_num_traits::Ct;
-use krabiecdsa::signing::SigningKey;
+use krabiecdsa::signing::PrehashSigningKey;
 use krabiecdsa::p256::P256;
 use krabiecdsa_footprint_cortex_m::test_fixture;
 use sha2::Sha256;
@@ -21,18 +21,19 @@ mod fixture {
 }
 
 type CtBackend = FixedUInt<u32, 8, Ct>;
+type Nct = FixedUInt<u32, 8>;
 
 #[entry]
 fn main() -> ! {
     test_fixture::<2048>(
         || {
-            let Some(key) = SigningKey::<P256>::from_bytes(&fixture::PRIVATE_KEY) else {
+            let Some(key) = PrehashSigningKey::<P256, CtBackend, Nct, Hmac<Sha256>>::from_bytes(&fixture::PRIVATE_KEY) else {
                 return false;
             };
             let mut r = [0u8; 32];
             let mut s = [0u8; 32];
             let ok =
-                key.sign_prehashed::<CtBackend, Hmac<Sha256>>(&fixture::DIGEST, &mut r, &mut s);
+                key.sign_prehashed(&fixture::DIGEST, &mut r, &mut s);
             // Keep the serialized signature observable: under LTO +
             // opt-level="z" the optimizer could otherwise discard the
             // r/s write-back and undercount the measured work.
