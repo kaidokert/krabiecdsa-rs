@@ -12,6 +12,9 @@
 //! (NIST CAVP SigGen is *not* usable here: its ECDSA vectors withhold
 //! `d`/`k`, so a deterministic signer cannot reproduce their `r`/`s`.)
 
+// Uses the raw-slice `verify_for_curve` known-answer entry point.
+#![cfg(feature = "test-vectors")]
+
 use hmac::Hmac;
 use krabiecdsa::const_num_traits::Ct;
 use krabiecdsa::p256::P256;

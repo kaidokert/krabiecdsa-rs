@@ -330,7 +330,9 @@ mod p256_tests {
     #[test]
     fn fixed_size_wrapper() {
         assert_eq!(PUB.len(), PUBKEY_BYTES);
-        assert!(crate::p256::verify_prehashed::<U256>(&PUB, &DIGEST, &R, &S));
+        assert!(crate::verify_for_curve::<crate::p256::P256, U256>(
+            &PUB, &DIGEST, &R, &S
+        ));
     }
 
     #[test]
@@ -409,7 +411,9 @@ mod k256_tests {
 
     #[test]
     fn fixed_size_wrapper() {
-        assert!(crate::k256::verify_prehashed::<U256>(&PUB, &DIGEST, &R, &S));
+        assert!(crate::verify_for_curve::<crate::k256::K256, U256>(
+            &PUB, &DIGEST, &R, &S
+        ));
     }
 
     #[test]
@@ -489,7 +493,9 @@ mod p384_tests {
 
     #[test]
     fn fixed_size_wrapper() {
-        assert!(crate::p384::verify_prehashed::<U384>(&PUB, &DIGEST, &R, &S));
+        assert!(crate::verify_for_curve::<crate::p384::P384, U384>(
+            &PUB, &DIGEST, &R, &S
+        ));
     }
 
     #[test]

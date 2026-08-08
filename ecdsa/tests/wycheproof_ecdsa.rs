@@ -13,6 +13,9 @@
 //! The digest is computed here (SHA-256/384 of the vector's `msg`)
 //! because the crate's API is prehashed.
 
+// Uses the raw-slice `verify_for_curve` known-answer entry point.
+#![cfg(feature = "test-vectors")]
+
 use krabiecdsa::k256::K256;
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;

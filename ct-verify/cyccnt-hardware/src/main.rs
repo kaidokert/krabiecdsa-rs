@@ -196,7 +196,7 @@ fn preflight(key_bytes: &[u8; 32]) -> Option<P256SigningKey> {
     let mut s = [0u8; 32];
     if !key.verifying_key_sec1(&mut pubkey)
         || !key.sign_prehashed(&DIGEST, &mut r, &mut s)
-        || !p256::verify_prehashed::<Nct>(&pubkey, &DIGEST, &r, &s)
+        || !krabiecdsa::verify_for_curve::<P256, Nct>(&pubkey, &DIGEST, &r, &s)
     {
         return None;
     }
