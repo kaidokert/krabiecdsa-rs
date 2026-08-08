@@ -146,9 +146,9 @@ const fn hx<const N: usize>(s: &str) -> [u8; N] {
     out
 }
 
-/// Stamp out a curve module: constants, marker type, `Curve` impl,
-/// and the fixed-size `verify_prehashed` wrapper. The per-curve doc
-/// comments stay at the invocation site.
+/// Stamp out a curve module: constants, marker type, `Curve` impl, and the
+/// `VerifyingKey` / `RefVerifyingKey` types with their RustCrypto verifier
+/// trait impls. The per-curve module/marker docs stay at the invocation site.
 macro_rules! define_curve {
     (
         $(#[$mod_doc:meta])*
@@ -191,11 +191,11 @@ macro_rules! define_curve {
                 const GY: &'static [u8] = &GY_B;
             }
 
-            /// SEC1-uncompressed verifying key, carrying the bigint
-            /// backend as a type parameter. Exists for the RustCrypto
-            /// [`signature::hazmat::PrehashVerifier`] integration;
-            /// the plain `verify_prehashed` function is the native
-            /// API.
+            /// SEC1-uncompressed verifying key, carrying the bigint backend
+            /// as a type parameter. The primary verification interface: it
+            /// implements the RustCrypto
+            /// [`signature::hazmat::PrehashVerifier`] and
+            /// [`signature::DigestVerifier`] traits.
             #[derive(Copy, Clone, PartialEq, Eq)]
             pub struct VerifyingKey<T: FieldFor + ScalarBytes> {
                 sec1: [u8; PUBKEY_BYTES],
