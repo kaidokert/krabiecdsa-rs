@@ -333,6 +333,30 @@ macro_rules! define_curve {
                 }
             }
 
+            /// Hash-and-verify for the heap / non-`Copy` verify carrier;
+            /// the [`RefVerifyingKey`] mirror of [`VerifyingKey`]'s
+            /// [`signature::DigestVerifier`].
+            impl<T, D, S> signature::DigestVerifier<D, S> for RefVerifyingKey<T>
+            where
+                T: ScalarBytes,
+                modmath::SchoolbookFieldRef<T>: FieldOps<Backend = T>,
+                D: digest::Digest + digest::Update,
+                S: AsRef<[u8]>,
+            {
+                fn verify_digest<F: Fn(&mut D) -> Result<(), signature::Error>>(
+                    &self,
+                    f: F,
+                    signature: &S,
+                ) -> Result<(), signature::Error> {
+                    let mut digest = D::new();
+                    f(&mut digest)?;
+                    let hash = digest.finalize();
+                    <Self as signature::hazmat::PrehashVerifier<S>>::verify_prehash(
+                        self, &hash, signature,
+                    )
+                }
+            }
+
             /// RustCrypto signer: `sign_prehash` returns the P1363
             /// `r || s` (fixed `2·ELEM_BYTES`), RFC 6979-deterministic.
             /// The whole deterministic sign — nonce derivation included —

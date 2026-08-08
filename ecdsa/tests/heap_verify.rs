@@ -59,6 +59,46 @@ fn heap_verifying_key_p256() {
     assert!(key.verify_prehash(&digest, &[0u8; 63]).is_err());
 }
 
+// The heap carrier also hashes-and-verifies via `DigestVerifier`, mirroring
+// `VerifyingKey`. RFC 6979 §A.2.5 "sample": sha256("sample") is the digest.
+#[test]
+fn heap_digest_verifier_p256() {
+    use krabiecdsa::p256::RefVerifyingKey;
+    use sha2::{Digest, Sha256};
+    use signature::DigestVerifier;
+
+    const RFC_PUB: &str = "0460fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb67903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299";
+    const RFC_R: &str = "efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716";
+    const RFC_S: &str = "f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8";
+
+    let pk: [u8; 65] = hx(RFC_PUB).try_into().unwrap();
+    let key = RefVerifyingKey::<Heap>::from_sec1_bytes(pk);
+    let mut sig = hx(RFC_R);
+    sig.extend_from_slice(&hx(RFC_S));
+
+    assert!(
+        key.verify_digest(
+            |d: &mut Sha256| {
+                d.update(b"sample");
+                Ok(())
+            },
+            &sig
+        )
+        .is_ok()
+    );
+    // a different message must not verify
+    assert!(
+        key.verify_digest(
+            |d: &mut Sha256| {
+                d.update(b"other");
+                Ok(())
+            },
+            &sig
+        )
+        .is_err()
+    );
+}
+
 #[test]
 fn heap_malformed_inputs_reject_no_panic() {
     // The SEC1 length/tag checks live in the shared verify core, so the
