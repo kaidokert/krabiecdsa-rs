@@ -22,7 +22,7 @@ riscv-rt = "0.13"
 krabi-caliper = { version = "0.1.0", features = ["stack", "risc-v", "uart"] }
 
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
-krabiecdsa = { path = "../../ecdsa" }
+krabiecdsa = { path = "../../ecdsa", features = ["test-vectors"] }
 
 [profile.release]
 codegen-units = 1

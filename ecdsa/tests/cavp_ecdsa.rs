@@ -13,6 +13,9 @@
 //! comments are CAVP's own failure taxonomy ("Message changed",
 //! "R changed", "Q changed", ...).
 
+// Uses the raw-slice `verify_for_curve` known-answer entry point.
+#![cfg(feature = "test-vectors")]
+
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
 use krabiecdsa::{Curve, FieldFor, ScalarBytes, verify_for_curve};

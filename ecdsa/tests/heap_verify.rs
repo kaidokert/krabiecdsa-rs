@@ -7,6 +7,9 @@
 //! cross-impl suite uses); accept/reject must match the fixed-width
 //! backends.
 
+// Uses the raw-slice `verify_for_curve` known-answer entry point.
+#![cfg(feature = "test-vectors")]
+
 use krabiecdsa::p256::P256;
 use krabiecdsa::verify_for_curve_ref;
 use num_bigint::FixedWidthBigUint as Heap;

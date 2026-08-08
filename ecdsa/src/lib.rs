@@ -12,13 +12,17 @@
 //! [`signing`] module (see its side-channel scope notes):
 //!
 //! ```
-//! use krabiecdsa::p256;
+//! use krabiecdsa::p256::VerifyingKey;
+//! use signature::hazmat::PrehashVerifier;
 //! # type Backend = fixed_bigint::FixedUInt<u32, 8>; // dev-dependency backend for this doctest
 //!
 //! let pubkey = [4u8; 65]; // SEC1 uncompressed: 0x04 || X || Y
 //! let digest = [0u8; 32]; // SHA-256 of the message
-//! let (r, s) = ([1u8; 32], [1u8; 32]);
-//! assert!(!p256::verify_prehashed::<Backend>(&pubkey, &digest, &r, &s));
+//! let sig = [1u8; 64]; // P1363 signature: r || s
+//!
+//! let key = VerifyingKey::<Backend>::from_sec1_bytes(pubkey);
+//! // garbage inputs are rejected (a real pubkey/signature verifies `Ok`)
+//! assert!(key.verify_prehash(&digest, &sig).is_err());
 //! ```
 //!
 //! The verifiers take an unpacked `(r, s)` pair — DER decoding
@@ -76,7 +80,7 @@ impl<T> ScalarBytes for T where
 /// `FromByteSlice::from_be_slice` zero-extends short input and rejects
 /// empty or wider-than-`T` input. Every call site in this crate feeds
 /// it at most `ELEM_BYTES ≤ size_of::<T>()` bytes (compile-time
-/// guard in [`verify_for_curve`]) and never an empty slice (empty
+/// guard in `verify_for_curve`) and never an empty slice (empty
 /// digests are rejected at the input gate), so the `Err` branch is
 /// structurally unreachable; mapping it to zero rather than
 /// unwrapping avoids linking a panic path.
@@ -87,7 +91,7 @@ fn from_be<T: ScalarBytes>(bytes: &[u8]) -> T {
 /// Short-Weierstrass curve `y² = x³ + ax + b` over a prime field.
 ///
 /// All constants are big-endian and exactly `ELEM_BYTES` long —
-/// [`verify_for_curve`] checks the lengths at compile time, so a
+/// `verify_for_curve` checks the lengths at compile time, so a
 /// mis-sized constant in a downstream `Curve` impl fails the build
 /// instead of verifying on a silently wrong curve.
 ///
@@ -159,8 +163,6 @@ macro_rules! define_curve {
             n: $n:expr,
             gx: $gx:expr,
             gy: $gy:expr,
-            $(#[$fn_doc:meta])*
-            fn verify_prehashed;
         }
     ) => {
         $(#[$mod_doc])*
@@ -189,21 +191,10 @@ macro_rules! define_curve {
                 const GY: &'static [u8] = &GY_B;
             }
 
-            $(#[$fn_doc])*
-            #[must_use]
-            pub fn verify_prehashed<T: FieldFor + ScalarBytes>(
-                pubkey: &[u8; PUBKEY_BYTES],
-                digest: &[u8; $db],
-                r: &[u8; $eb],
-                s: &[u8; $eb],
-            ) -> bool {
-                verify_for_curve::<$marker, T>(pubkey, digest, r, s)
-            }
-
             /// SEC1-uncompressed verifying key, carrying the bigint
             /// backend as a type parameter. Exists for the RustCrypto
             /// [`signature::hazmat::PrehashVerifier`] integration;
-            /// the plain [`verify_prehashed`] function is the native
+            /// the plain `verify_prehashed` function is the native
             /// API.
             #[derive(Copy, Clone, PartialEq, Eq)]
             pub struct VerifyingKey<T: FieldFor + ScalarBytes> {
@@ -234,7 +225,7 @@ macro_rules! define_curve {
             }
 
             /// `prehash` is the message digest (see
-            /// [`verify_for_curve`] for the truncation rule);
+            /// `verify_for_curve` for the truncation rule);
             /// `signature` is IEEE P1363 `r || s`, fixed-width. Any
             /// other signature length is an error.
             impl<T: FieldFor + ScalarBytes, S: AsRef<[u8]>>
@@ -258,25 +249,9 @@ macro_rules! define_curve {
                 }
             }
 
-            /// Heap / non-`Copy` analog of [`verify_prehashed`], verifying
-            /// through the schoolbook field ([`verify_for_curve_ref`]).
-            #[must_use]
-            pub fn verify_prehashed_ref<T>(
-                pubkey: &[u8; PUBKEY_BYTES],
-                digest: &[u8; $db],
-                r: &[u8; $eb],
-                s: &[u8; $eb],
-            ) -> bool
-            where
-                T: ScalarBytes,
-                modmath::SchoolbookFieldRef<T>: FieldOps<Backend = T>,
-            {
-                verify_for_curve_ref::<$marker, T>(pubkey, digest, r, s)
-            }
-
             /// SEC1-uncompressed verifying key for a **heap / non-`Copy`**
             /// carrier — the [`RefVerifyingKey`] analog of [`VerifyingKey`],
-            /// verifying through [`verify_for_curve_ref`] (the variable-time
+            /// verifying through `verify_for_curve_ref` (the variable-time
             /// schoolbook field). Same RustCrypto
             /// [`signature::hazmat::PrehashVerifier`] surface, for a
             /// verify-only single-carrier build.
@@ -543,7 +518,7 @@ define_curve! {
     /// NIST P-256 / secp256r1 (TLS `ecdsa_secp256r1_sha256`, X.509
     /// `ecdsa-with-SHA256`).
     pub mod p256 {
-        /// Curve marker for [`verify_for_curve`].
+        /// Curve marker for `verify_for_curve`.
         marker: P256,
         elem_bytes: 32,
         digest_bytes: 32,
@@ -553,21 +528,13 @@ define_curve! {
         n: "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551",
         gx: "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
         gy: "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-        /// Verify an ECDSA-P256 signature over a SHA-256 digest. See
-        /// [`verify_for_curve`] for the input contract.
-        ///
-        /// The digest size is fixed to the TLS 1.3 pairing (SHA-256).
-        /// X.509 allows other hash/curve pairings; for those, call
-        /// [`verify_for_curve`] directly — it implements the general
-        /// digest-truncation rule for any digest length.
-        fn verify_prehashed;
     }
 }
 
 define_curve! {
     /// secp256k1 (Bitcoin/Ethereum's curve; `a = 0`).
     pub mod k256 {
-        /// Curve marker for [`verify_for_curve`].
+        /// Curve marker for `verify_for_curve`.
         marker: K256,
         elem_bytes: 32,
         digest_bytes: 32,
@@ -577,15 +544,6 @@ define_curve! {
         n: "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
         gx: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         gy: "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
-        /// Verify an ECDSA-secp256k1 signature over a SHA-256 digest.
-        /// See [`verify_for_curve`] for the input contract. High-`s`
-        /// signatures are accepted — low-`s` enforcement (Bitcoin
-        /// consensus rules) is the caller's policy, not this crate's.
-        ///
-        /// For other digest lengths, call [`verify_for_curve`]
-        /// directly — it implements the general digest-truncation
-        /// rule for any digest length.
-        fn verify_prehashed;
     }
 }
 
@@ -593,7 +551,7 @@ define_curve! {
     /// NIST P-384 / secp384r1 (TLS `ecdsa_secp384r1_sha384`, X.509
     /// `ecdsa-with-SHA384`).
     pub mod p384 {
-        /// Curve marker for [`verify_for_curve`].
+        /// Curve marker for `verify_for_curve`.
         marker: P384,
         elem_bytes: 48,
         digest_bytes: 48,
@@ -603,15 +561,6 @@ define_curve! {
         n: "ffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973",
         gx: "aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7",
         gy: "3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f",
-        /// Verify an ECDSA-P384 signature over a SHA-384 digest. See
-        /// [`verify_for_curve`] for the input contract.
-        ///
-        /// The digest size is fixed to the TLS 1.3 pairing (SHA-384).
-        /// X.509 allows other hash/curve pairings (e.g. a P-384 key
-        /// with `ecdsa-with-SHA256`); for those, call
-        /// [`verify_for_curve`] directly — it implements the general
-        /// digest-truncation rule for any digest length.
-        fn verify_prehashed;
     }
 }
 
@@ -866,7 +815,34 @@ fn hash_to_scalar<T: ScalarBytes>(digest: &[u8], n_bits: usize) -> T {
 /// `(r, s)` is inherent ECDSA malleability and TLS does not require
 /// low-`s`.
 #[must_use]
+/// `test-vectors` only: public under the `test-vectors` feature (raw
+/// byte-slice verify, for the known-answer / robustness suites). Production
+/// verifies through the per-curve `VerifyingKey` + the RustCrypto
+/// `PrehashVerifier` / `DigestVerifier` traits.
+#[cfg(feature = "test-vectors")]
 pub fn verify_for_curve<C: Curve, T: FieldFor + ScalarBytes>(
+    pubkey: &[u8],
+    digest: &[u8],
+    r: &[u8],
+    s: &[u8],
+) -> bool {
+    verify_for_curve_impl::<C, T>(pubkey, digest, r, s)
+}
+
+/// Internal raw-slice verify — the always-compiled implementation the
+/// `VerifyingKey` `PrehashVerifier` impls delegate to; public only under
+/// `test-vectors` (above).
+#[cfg(not(feature = "test-vectors"))]
+pub(crate) fn verify_for_curve<C: Curve, T: FieldFor + ScalarBytes>(
+    pubkey: &[u8],
+    digest: &[u8],
+    r: &[u8],
+    s: &[u8],
+) -> bool {
+    verify_for_curve_impl::<C, T>(pubkey, digest, r, s)
+}
+
+fn verify_for_curve_impl<C: Curve, T: FieldFor + ScalarBytes>(
     pubkey: &[u8],
     digest: &[u8],
     r: &[u8],
@@ -886,15 +862,42 @@ pub fn verify_for_curve<C: Curve, T: FieldFor + ScalarBytes>(
     verify_inner::<C, T::Field>(&fp, &fn_, pubkey, digest, r, s)
 }
 
-/// Like [`verify_for_curve`], for a **heap / `Clone` (non-`Copy`)**
+/// Like `verify_for_curve`, for a **heap / `Clone` (non-`Copy`)**
 /// carrier — a verify-only path over modmath's variable-time schoolbook
 /// field ([`modmath::SchoolbookFieldRef`]) instead of the `Copy`-gated
 /// Montgomery field. Verify is public data, so the variable-time field
 /// is a correctness-equivalent footprint/allocation trade. The carrier
 /// physically cannot reach any constant-time (sign) path — it isn't
 /// `Copy`, so it can never be a [`signing::ConstantTimeInt`].
+/// `test-vectors` only: the heap/`Ref`-carrier analogue of
+/// `verify_for_curve`, public only under the `test-vectors` feature.
+/// Production uses the per-curve `RefVerifyingKey` + the RustCrypto verifier
+/// traits.
+#[cfg(feature = "test-vectors")]
 #[must_use]
 pub fn verify_for_curve_ref<C: Curve, T>(pubkey: &[u8], digest: &[u8], r: &[u8], s: &[u8]) -> bool
+where
+    T: ScalarBytes,
+    modmath::SchoolbookFieldRef<T>: FieldOps<Backend = T>,
+{
+    verify_for_curve_ref_impl::<C, T>(pubkey, digest, r, s)
+}
+
+#[cfg(not(feature = "test-vectors"))]
+pub(crate) fn verify_for_curve_ref<C: Curve, T>(
+    pubkey: &[u8],
+    digest: &[u8],
+    r: &[u8],
+    s: &[u8],
+) -> bool
+where
+    T: ScalarBytes,
+    modmath::SchoolbookFieldRef<T>: FieldOps<Backend = T>,
+{
+    verify_for_curve_ref_impl::<C, T>(pubkey, digest, r, s)
+}
+
+fn verify_for_curve_ref_impl<C: Curve, T>(pubkey: &[u8], digest: &[u8], r: &[u8], s: &[u8]) -> bool
 where
     T: ScalarBytes,
     modmath::SchoolbookFieldRef<T>: FieldOps<Backend = T>,
@@ -910,8 +913,8 @@ where
 
 /// Shared verify core over a caller-built field pair (`fp` mod p, `fn_`
 /// mod n), generic over any [`FieldOps`]. The two public entries differ
-/// only in how they build the field: [`verify_for_curve`] via the
-/// `Copy` Montgomery [`FieldFor`] selector, [`verify_for_curve_ref`] via
+/// only in how they build the field: `verify_for_curve` via the
+/// `Copy` Montgomery [`FieldFor`] selector, `verify_for_curve_ref` via
 /// the `Clone` schoolbook field.
 fn verify_inner<C: Curve, F: FieldOps>(
     fp: &F,
