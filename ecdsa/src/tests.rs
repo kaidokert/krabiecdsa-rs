@@ -580,9 +580,12 @@ mod rustcrypto_signing {
         assert!(K::from_bytes(&D).is_some());
     }
 
-    use crate::signing::{RandomizedSigningKey, sign_prehashed_ct, sign_prehashed_ct_hedged};
+    use crate::signing::RandomizedSigningKey;
+    #[cfg(feature = "test-vectors")]
+    use crate::signing::{sign_prehashed_ct, sign_prehashed_ct_hedged};
     use signature::hazmat::RandomizedPrehashSigner;
 
+    #[cfg(feature = "test-vectors")]
     fn concat_rs(r: &[u8; 32], s: &[u8; 32]) -> [u8; 64] {
         let mut rs = [0u8; 64];
         rs[..32].copy_from_slice(r);
@@ -641,6 +644,8 @@ mod rustcrypto_signing {
 
     // Empty additional data reproduces the deterministic RFC 6979 signature
     // byte-for-byte — hedging is strictly additive over the deterministic base.
+    // Exercises the test-vectors-only raw sign entry points.
+    #[cfg(feature = "test-vectors")]
     #[test]
     fn hedged_empty_matches_deterministic() {
         let (mut r0, mut s0) = ([0u8; 32], [0u8; 32]);
@@ -660,6 +665,7 @@ mod rustcrypto_signing {
     }
 
     // Distinct entropy yields distinct signatures, each valid under the key.
+    #[cfg(feature = "test-vectors")]
     #[test]
     fn hedged_varies_and_verifies() {
         let verifier = VerifyingKey::<U256>::from_sec1_bytes(PUB);

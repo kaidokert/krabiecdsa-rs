@@ -976,8 +976,8 @@ where
 /// Constant-time ECDSA signing. Every signer runs the secret operations on
 /// the constant-time (`Ct`) modmath surface — RCB
 /// complete formulas, a branch-free double-and-add-always ladder, and a
-/// Fermat inverse — via [`signing::sign_prehashed_ct`],
-/// [`signing::SigningKey`], [`signing::PrehashSigningKey`], and the hedged
+/// Fermat inverse — via [`signing::SigningKey`],
+/// [`signing::PrehashSigningKey`], and the hedged
 /// [`signing::RandomizedSigningKey`]. The deterministic paths are
 /// constant-time up to RFC 6979's inherent rejection-loop count, validated
 /// against the RFC/CAVP vectors, cross-checked with openssl, and attested by
@@ -1539,6 +1539,11 @@ pub mod signing {
     /// signature math (RCB scalar multiply + `k⁻¹`) runs constant-time.
     /// `M` is the HMAC whose hash matches
     /// the digest's (e.g. `Hmac<Sha256>` for a SHA-256 digest).
+    ///
+    /// **`test-vectors` only.** The raw byte-slice sign entry point exists
+    /// for known-answer-test harnesses; production code signs through the
+    /// key types + RustCrypto traits (`SigningKey` / `PrehashSigningKey`).
+    #[cfg(feature = "test-vectors")]
     #[must_use]
     pub fn sign_prehashed_ct<C: Curve, Tct: ConstantTimeInt, M: digest::KeyInit + digest::Mac>(
         private_key: &[u8],
@@ -1559,6 +1564,11 @@ pub mod signing {
     /// trace averaging and the deterministic-ECDSA fault break. The
     /// entropy is public (not secret), so the derivation stays
     /// constant-time.
+    ///
+    /// **`test-vectors` only.** Raw byte-slice entry point for KAT
+    /// harnesses; production hedged signing goes through
+    /// [`RandomizedSigningKey`] / `RandomizedPrehashSigner`.
+    #[cfg(feature = "test-vectors")]
     #[must_use]
     pub fn sign_prehashed_ct_hedged<
         C: Curve,
@@ -1594,70 +1604,7 @@ pub mod signing {
         derived & signed
     }
 
-    /// Hedged constant-time sign **with a verify-after-sign fault check**.
-    /// Produces a hedged signature (as [`sign_prehashed_ct_hedged`]), then
-    /// derives the public key `d·G` (constant-time, backend `Tct`) and
-    /// verifies the fresh
-    /// `(r, s)` through the variable-time verify path (backend `Tv`)
-    /// before accepting. A computational fault in the signature math is
-    /// caught here; on any failure the outputs are zeroed and `false` is
-    /// returned, so a faulted signature is never released.
-    ///
-    /// The verify runs variable-time, which is sound: `(r, s)`, the
-    /// digest, and the public key are all public the instant the
-    /// signature is emitted. `Tv` is an ordinary (non-Ct) verify backend
-    /// (`FieldFor + ScalarBytes`), distinct from the Ct signing backend
-    /// `Tct`.
-    #[must_use]
-    pub fn sign_prehashed_ct_hedged_verified<
-        C: Curve,
-        Tct: ConstantTimeInt,
-        Tv: FieldFor + ScalarBytes,
-        M: digest::KeyInit + digest::Mac,
-    >(
-        private_key: &[u8],
-        digest: &[u8],
-        added: &[u8],
-        out_r: &mut [u8],
-        out_s: &mut [u8],
-    ) -> bool {
-        // Local buffer-size guard: the SEC1 buffer below holds
-        // `1 + 2·ELEM_BYTES`, so ELEM_BYTES must fit MAX_ELEM. Same
-        // compile-time rejection SigningKey enforces; stating it here keeps
-        // the buffer invariant local — a wider custom curve fails to
-        // compile rather than slicing out of bounds.
-        const {
-            assert!(
-                C::ELEM_BYTES <= MAX_ELEM,
-                "Curve's ELEM_BYTES exceeds MAX_ELEM"
-            );
-        }
-        let eb = C::ELEM_BYTES;
-        // Derive Q = d·G fresh for this standalone entry point. A repeat
-        // signer (e.g. RandomizedSigningKey) caches the public key and uses
-        // the with-pubkey path to skip this per-signature scalar multiply.
-        let mut pubkey = [0u8; 1 + 2 * MAX_ELEM];
-        let q_ok = out_r.len() == eb
-            && out_s.len() == eb
-            && SigningKey::<C>::from_bytes(private_key)
-                .is_some_and(|sk| sk.verifying_key_sec1::<Tct>(&mut pubkey[..1 + 2 * eb]));
-        if !q_ok {
-            out_r.iter_mut().for_each(|b| *b = 0);
-            out_s.iter_mut().for_each(|b| *b = 0);
-            return false;
-        }
-        sign_hedged_verified_with_pubkey::<C, Tct, Tv, M>(
-            private_key,
-            &pubkey[..1 + 2 * eb],
-            digest,
-            added,
-            out_r,
-            out_s,
-        )
-    }
-
-    /// The verify-after-sign core shared by
-    /// [`sign_prehashed_ct_hedged_verified`] and [`RandomizedSigningKey`]:
+    /// The verify-after-sign core behind [`RandomizedSigningKey`]:
     /// hedged-sign, then verify `(r, s)` against the **already-derived**
     /// SEC1 public key `pubkey_sec1` on the variable-time backend `Tv`. On
     /// any failure both output slices are zeroed and `false` returned, so a
@@ -1747,11 +1694,10 @@ pub mod signing {
             })
         }
 
-        /// Sign `digest` with an RFC 6979 nonce (see
-        /// [`sign_prehashed_ct`]). `Tct` is the Ct backend for both the
-        /// nonce derivation and the secret signature math; `M` the HMAC.
-        /// The whole deterministic sign is constant-time up to RFC
-        /// 6979's inherent rejection-loop count.
+        /// Sign `digest` with an RFC 6979 deterministic nonce. `Tct` is the
+        /// Ct backend for both the nonce derivation and the secret signature
+        /// math; `M` the HMAC. The whole deterministic sign is constant-time
+        /// up to RFC 6979's inherent rejection-loop count.
         #[must_use]
         pub fn sign_prehashed<Tct: ConstantTimeInt, M: digest::KeyInit + digest::Mac>(
             &self,
@@ -1759,7 +1705,13 @@ pub mod signing {
             out_r: &mut [u8],
             out_s: &mut [u8],
         ) -> bool {
-            sign_prehashed_ct::<C, Tct, M>(&self.d[..C::ELEM_BYTES], digest, out_r, out_s)
+            sign_prehashed_ct_added::<C, Tct, M>(
+                &self.d[..C::ELEM_BYTES],
+                digest,
+                &[],
+                out_r,
+                out_s,
+            )
         }
 
         /// Derive the SEC1-uncompressed public key `0x04 || X || Y`
@@ -1916,11 +1868,13 @@ pub mod signing {
             })
         }
 
-        /// Hedged constant-time sign with a verify-after-sign fault check
-        /// (see [`sign_prehashed_ct_hedged_verified`]). `added` is fresh
+        /// Hedged constant-time sign with a verify-after-sign fault check:
+        /// derives the signature under a nonce hedged with `added`, then
+        /// verifies it against the public key cached at construction before
+        /// releasing it (zeroing the outputs on a fault). `added` is fresh
         /// entropy — distinct entropy per call makes repeated signatures
-        /// over one digest differ. Reuses the public key cached at
-        /// construction, so no `d·G` is recomputed per signature.
+        /// over one digest differ; empty `added` is the plain RFC 6979
+        /// deterministic nonce.
         #[must_use]
         pub fn sign_prehashed_hedged(
             &self,
