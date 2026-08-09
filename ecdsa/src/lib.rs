@@ -1471,59 +1471,31 @@ pub mod signing {
     /// ladder cost stays small.
     pub(crate) const SCALAR_BLIND_BYTES: usize = 8;
 
-    /// Big-endian `out = k + r·n`, where `k`/`n` are `eb` bytes and `r` is
-    /// [`SCALAR_BLIND_BYTES`]; `out` must be `eb + SCALAR_BLIND_BYTES + 1`
-    /// bytes. Byte-limb schoolbook arithmetic keeps the blinded scalar from
-    /// pulling a concrete bignum type into this backend-generic crate. Loop
-    /// bounds are the fixed buffer widths (inputs are zero-extended), so
-    /// every index is provably in-bounds — no bounds-check panic — and data-
-    /// oblivious (no branch on secret values). `k` is secret; the caller
+    /// Big-endian `out = k + r·n`, where `k`/`n` are the field width and `r`
+    /// is [`SCALAR_BLIND_BYTES`]; `out` must be `ELEM_BYTES + SCALAR_BLIND_BYTES
+    /// + 1` bytes. `r·n` reuses the backend's widening multiply (`wide_mul`
+    /// → `(lo, hi)`) — modmath's CT-tested primitive rather than a hand-rolled
+    /// multiply — so it requires `T` to be exactly the field width (the split
+    /// between `lo` and `hi` lands at the field boundary; the caller asserts
+    /// this). `k` is secret and the arithmetic is data-oblivious; the caller
     /// zeroizes `out`.
-    fn blind_scalar(k: &[u8], r: &[u8], n: &[u8], out: &mut [u8]) {
-        const L: usize = MAX_ELEM + SCALAR_BLIND_BYTES + 1;
-        // Zero-extended little-endian limbs (u16: a partial product plus the
-        // running limb and carry never exceeds 0xFFFF = 255·255 + 255 + 255).
-        let mut n_le = [0u16; MAX_ELEM];
-        let mut k_le = [0u16; MAX_ELEM];
-        let mut r_le = [0u16; SCALAR_BLIND_BYTES];
-        for (d, &b) in n_le.iter_mut().zip(n.iter().rev()) {
-            *d = b as u16;
+    fn blind_scalar<T: ConstantTimeInt>(k: &[u8], r: &[u8], n: &[u8], out: &mut [u8]) {
+        let split = SCALAR_BLIND_BYTES + 1;
+        if out.len() < split {
+            return; // makes the fixed-offset writes below provably in-bounds
         }
-        for (d, &b) in k_le.iter_mut().zip(k.iter().rev()) {
-            *d = b as u16;
-        }
-        for (d, &b) in r_le.iter_mut().zip(r.iter().rev()) {
-            *d = b as u16;
-        }
-
-        let mut le = [0u16; L];
-        for i in 0..MAX_ELEM {
-            let ni = n_le[i];
-            let mut carry = 0u16;
-            for j in 0..SCALAR_BLIND_BYTES {
-                let t = le[i + j] + ni * r_le[j] + carry;
-                le[i + j] = t & 0xff;
-                carry = t >> 8;
-            }
-            le[i + SCALAR_BLIND_BYTES] = carry; // untouched by earlier rows
-        }
-        let mut carry = 0u16;
-        for i in 0..MAX_ELEM {
-            let t = le[i] + k_le[i] + carry;
-            le[i] = t & 0xff;
-            carry = t >> 8;
-        }
-        for slot in le.iter_mut().skip(MAX_ELEM) {
-            let t = *slot + carry;
-            *slot = t & 0xff;
-            carry = t >> 8;
-        }
-        // Little-endian limbs -> big-endian `out` (low `out.len()` limbs).
-        for (o, &limb) in out.iter_mut().rev().zip(le.iter()) {
-            *o = limb as u8;
-        }
-        le.iter_mut().for_each(|x| *x = 0);
-        k_le.iter_mut().for_each(|x| *x = 0);
+        let n_t = from_be::<T>(n);
+        let r_t = from_be::<T>(r);
+        let k_t = from_be::<T>(k);
+        // r·n = hi·2^(ELEM_BYTES·8) + lo (hi < 2^(SCALAR_BLIND_BYTES·8) since
+        // r < 2^(SCALAR_BLIND_BYTES·8)); fold k into lo, carrying into hi.
+        let (lo, hi) = n_t.wide_mul(&r_t);
+        let (lo, carry) = lo.overflowing_add(k_t);
+        let inc = T::conditional_select(&T::zero(), &T::one(), subtle::Choice::from(carry as u8));
+        let hi = hi.wrapping_add(inc);
+        // Big-endian `out`: the top `split` bytes are `hi`, the rest are `lo`.
+        to_be_ct::<T>(&hi, &mut out[..split]);
+        to_be_ct::<T>(&lo, &mut out[split..]);
     }
 
     /// Affine x-coordinate `X/Z` (RCB projective) and whether the point
@@ -1718,9 +1690,14 @@ pub mod signing {
         out_s: &mut [u8],
     ) -> bool {
         const {
+            // Exactly field-width (not just `>=`): scalar blinding's `k' = k +
+            // r·n` uses the backend's widening multiply, whose `(lo, hi)` split
+            // lands at the field boundary only when `T` is the field width.
+            // Every signing backend already satisfies this (u8/u32/u64 limbs
+            // all sum to `ELEM_BYTES`); an oversized sign backend is unused.
             assert!(
-                core::mem::size_of::<T>() >= C::ELEM_BYTES,
-                "backend type narrower than the curve's field element"
+                core::mem::size_of::<T>() == C::ELEM_BYTES,
+                "signing backend must be exactly the curve's field width"
             );
             assert!(
                 C::P.len() == C::ELEM_BYTES
@@ -1806,7 +1783,7 @@ pub mod signing {
         } else {
             let l = eb + SCALAR_BLIND_BYTES + 1;
             let mut kp = zeroize::Zeroizing::new([0u8; MAX_ELEM + SCALAR_BLIND_BYTES + 1]);
-            blind_scalar(k, scalar_blind, C::N, &mut kp[..l]);
+            blind_scalar::<T>(k, scalar_blind, C::N, &mut kp[..l]);
             scalar_mul_ct(&fp, &a_res, &b3, &kp[..l], &g)
         };
         let (rx, rx_ok) = affine_x_ct(&fp, &kg);
