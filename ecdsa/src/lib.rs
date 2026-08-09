@@ -1480,10 +1480,6 @@ pub mod signing {
     /// this). `k` is secret and the arithmetic is data-oblivious; the caller
     /// zeroizes `out`.
     fn blind_scalar<T: ConstantTimeInt>(k: &[u8], r: &[u8], n: &[u8], out: &mut [u8]) {
-        let split = SCALAR_BLIND_BYTES + 1;
-        if out.len() < split {
-            return; // makes the fixed-offset writes below provably in-bounds
-        }
         let n_t = from_be::<T>(n);
         let r_t = from_be::<T>(r);
         let k_t = from_be::<T>(k);
@@ -1493,9 +1489,16 @@ pub mod signing {
         let (lo, carry) = lo.overflowing_add(k_t);
         let inc = T::conditional_select(&T::zero(), &T::one(), subtle::Choice::from(carry as u8));
         let hi = hi.wrapping_add(inc);
-        // Big-endian `out`: the top `split` bytes are `hi`, the rest are `lo`.
-        to_be_ct::<T>(&hi, &mut out[..split]);
-        to_be_ct::<T>(&lo, &mut out[split..]);
+        // Big-endian `out`: the top `SCALAR_BLIND_BYTES + 1` bytes are `hi`, the
+        // rest are `lo`. `split_first_chunk_mut` is a fallible split (returns
+        // `Option`, never panics) with a const chunk width — no bounds-check
+        // panic, unlike a `[..n]` slice.
+        if let Some((hi_bytes, lo_bytes)) =
+            out.split_first_chunk_mut::<{ SCALAR_BLIND_BYTES + 1 }>()
+        {
+            to_be_ct::<T>(&hi, hi_bytes);
+            to_be_ct::<T>(&lo, lo_bytes);
+        }
     }
 
     /// Affine x-coordinate `X/Z` (RCB projective) and whether the point
