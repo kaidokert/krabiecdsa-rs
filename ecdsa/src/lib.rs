@@ -413,21 +413,26 @@ macro_rules! define_curve {
                     prehash: &[u8],
                 ) -> Result<[u8; 2 * $eb], signature::Error> {
                     // 256 bits of hedge entropy for the RFC 6979 §3.6 nonce,
-                    // plus one field element of coordinate-blinding λ.
-                    // Both are wiped after use. A weak or all-zero hedge draw
-                    // degrades to RFC 6979 determinism, never to nonce reuse
-                    // (key + digest still seed the DRBG); a weak λ only weakens
-                    // the DPA blinding, never correctness. Fallible fills mapped
-                    // to an error — the RNG must not panic.
+                    // one field element of coordinate-blinding λ, and a
+                    // 64-bit scalar-blinding factor `r`. All wiped after use. A
+                    // weak or all-zero hedge draw degrades to RFC 6979
+                    // determinism, never to nonce reuse (key + digest still
+                    // seed the DRBG); a weak λ or `r` only weakens the DPA
+                    // blinding, never correctness. Fallible fills mapped to an
+                    // error — the RNG must not panic.
                     let mut z = zeroize::Zeroizing::new([0u8; 32]);
                     let mut lambda = zeroize::Zeroizing::new([0u8; $eb]);
+                    let mut sblind =
+                        zeroize::Zeroizing::new([0u8; crate::signing::SCALAR_BLIND_BYTES]);
                     signature::rand_core::TryRng::try_fill_bytes(rng, &mut z[..])
                         .map_err(|_| signature::Error::new())?;
                     signature::rand_core::TryRng::try_fill_bytes(rng, &mut lambda[..])
                         .map_err(|_| signature::Error::new())?;
+                    signature::rand_core::TryRng::try_fill_bytes(rng, &mut sblind[..])
+                        .map_err(|_| signature::Error::new())?;
                     let mut sig = [0u8; 2 * $eb];
                     let (r, s) = sig.split_at_mut($eb);
-                    if self.sign_prehashed_hedged(&z[..], &lambda[..], prehash, r, s) {
+                    if self.sign_prehashed_hedged(&z[..], &lambda[..], &sblind[..], prehash, r, s) {
                         Ok(sig)
                     } else {
                         Err(signature::Error::new())
@@ -1019,18 +1024,19 @@ where
 /// The constant-time guarantee is **timing only**. It does NOT cover:
 ///
 /// - **Power / EM side channels (DPA/CPA).** [`signing::RandomizedSigningKey`]
-///   applies **projective-coordinate randomization**: each signature draws a
-///   random field element λ from the RNG and scales the base point
-///   `(X:Y:Z) → (λX:λY:λZ)`, so every scalar-multiply trace runs on different
-///   field values — this defeats trace averaging (DPA/CPA) on the point
-///   arithmetic. It also hedges the nonce (RFC 6979 §3.6) and fault-checks the
-///   output. Two caveats: **(1)** the deterministic
+///   applies both standard blinding countermeasures per signature:
+///   **projective-coordinate randomization** (a random λ scales the base point
+///   `(X:Y:Z) → (λX:λY:λZ)`) and **scalar blinding** (the nonce is multiplied
+///   as `k + r·n` for a 64-bit random `r`, `n·G = O` so the signature is
+///   unchanged). Together they make every scalar-multiply trace run on
+///   different field values *and* a different scalar, defeating trace
+///   averaging (DPA/CPA). It also hedges the nonce (RFC 6979 §3.6) and
+///   fault-checks the output. Two caveats: **(1)** the deterministic
 ///   [`signing::PrehashSigningKey`] path has no RNG and is therefore
 ///   *unblinded* — power/EM-exposed deployments should use the randomized
-///   signer; **(2)** *scalar* blinding (`k + r·n`) is not yet applied, and the
-///   coordinate blinding's effectiveness has not yet been validated on
-///   hardware (power-trace TVLA is a planned follow-up). Treat the DPA
-///   resistance as designed-in but not-yet-measured.
+///   signer; **(2)** the blinding's effectiveness has not yet been validated
+///   on hardware (power-trace TVLA is the remaining follow-up), so treat the
+///   DPA resistance as designed-in but not-yet-measured.
 /// - **Comprehensive fault attacks.** Only the randomized path re-verifies
 ///   its own output.
 pub mod signing {
@@ -1416,26 +1422,82 @@ pub mod signing {
     /// add result on set bits. Every iteration does the same two
     /// complete additions and one conditional swap regardless of the
     /// scalar, so timing carries no information about it.
+    ///
+    /// `scalar` is big-endian bytes — a slice rather than a backend integer
+    /// so a blinded scalar `k + r·n` can be wider than one field element
+    /// while the point math stays at the native curve width. It is walked
+    /// MSB-first by iterator (no indexing, so no bounds-check panic), one
+    /// bit per iteration; the walk order depends only on the public length.
     // Distinct symbol for the ct-verify gates — see `add_rcb`.
     #[inline(never)]
     fn scalar_mul_ct<'f, T: ConstantTimeInt>(
         f: &'f FieldCt<T>,
         a: &ResidueCt<'f, T>,
         b3: &ResidueCt<'f, T>,
-        bits: usize,
-        scalar: &T,
+        scalar: &[u8],
         base: &PointCt<'f, T>,
     ) -> PointCt<'f, T> {
         let mut r = identity_ct(f);
-        for i in (0..bits).rev() {
-            r = add_rcb(f, a, b3, &r, &r);
-            let mut r_add = add_rcb(f, a, b3, &r, base);
-            let bit = !((*scalar >> i) & T::one()).ct_is_zero();
-            ResidueCt::cswap(bit, &mut r.x, &mut r_add.x);
-            ResidueCt::cswap(bit, &mut r.y, &mut r_add.y);
-            ResidueCt::cswap(bit, &mut r.z, &mut r_add.z);
+        // One `cswap`-selected double-and-add-always step per scalar bit.
+        macro_rules! step {
+            ($bit:expr) => {{
+                r = add_rcb(f, a, b3, &r, &r);
+                let mut r_add = add_rcb(f, a, b3, &r, base);
+                let bit = subtle::Choice::from($bit);
+                ResidueCt::cswap(bit, &mut r.x, &mut r_add.x);
+                ResidueCt::cswap(bit, &mut r.y, &mut r_add.y);
+                ResidueCt::cswap(bit, &mut r.z, &mut r_add.z);
+            }};
+        }
+        // The 8 bits per byte are unrolled so the byte iterator stays the
+        // loop's single branch (the ct-verify ladder's budget) and the inner
+        // work stays branch-free.
+        for &byte in scalar {
+            step!((byte >> 7) & 1);
+            step!((byte >> 6) & 1);
+            step!((byte >> 5) & 1);
+            step!((byte >> 4) & 1);
+            step!((byte >> 3) & 1);
+            step!((byte >> 2) & 1);
+            step!((byte >> 1) & 1);
+            step!(byte & 1);
         }
         r
+    }
+
+    /// Scalar blinding factor width in bytes: a 64-bit `r`, so `k' = k + r·n`
+    /// is only a partial word wider than the field element and the added
+    /// ladder cost stays small.
+    pub(crate) const SCALAR_BLIND_BYTES: usize = 8;
+
+    /// Big-endian `out = k + r·n`, where `k`/`n` are the field width and `r`
+    /// is [`SCALAR_BLIND_BYTES`]; `out` must be `ELEM_BYTES + SCALAR_BLIND_BYTES
+    /// + 1` bytes. `r·n` reuses the backend's widening multiply (`wide_mul`
+    /// → `(lo, hi)`) — modmath's CT-tested primitive rather than a hand-rolled
+    /// multiply — so it requires `T` to be exactly the field width (the split
+    /// between `lo` and `hi` lands at the field boundary; the caller asserts
+    /// this). `k` is secret and the arithmetic is data-oblivious; the caller
+    /// zeroizes `out`.
+    fn blind_scalar<T: ConstantTimeInt>(k: &[u8], r: &[u8], n: &[u8], out: &mut [u8]) {
+        let n_t = from_be::<T>(n);
+        let r_t = from_be::<T>(r);
+        let k_t = from_be::<T>(k);
+        // r·n = hi·2^(ELEM_BYTES·8) + lo (hi < 2^(SCALAR_BLIND_BYTES·8) since
+        // r < 2^(SCALAR_BLIND_BYTES·8)); fold k into lo, carrying into hi.
+        let (lo, hi) = n_t.wide_mul(&r_t);
+        let (lo, carry) = lo.overflowing_add(k_t);
+        let inc = T::conditional_select(&T::zero(), &T::one(), subtle::Choice::from(carry as u8));
+        let hi = hi.wrapping_add(inc);
+        // Big-endian `out`: the top `SCALAR_BLIND_BYTES + 1` bytes are `hi`, the
+        // rest are `lo`. `split_first_chunk_mut` is a fallible split (returns
+        // `Option`, never panics) with a const chunk width — no bounds-check
+        // panic, unlike a `[..n]` slice.
+        if let Some((hi_bytes, lo_bytes)) =
+            out.split_first_chunk_mut::<{ SCALAR_BLIND_BYTES + 1 }>()
+        {
+            to_be_ct::<T>(&hi, hi_bytes);
+            to_be_ct::<T>(&lo, lo_bytes);
+        }
     }
 
     /// Affine x-coordinate `X/Z` (RCB projective) and whether the point
@@ -1531,7 +1593,7 @@ pub mod signing {
             y: qy_r,
             z: fp.one(),
         };
-        let shared = scalar_mul_ct(&fp, &a_res, &b3, eb * 8, &d_int, &peer);
+        let shared = scalar_mul_ct(&fp, &a_res, &b3, d, &peer);
         let (sx, sx_ok) = affine_x_ct(&fp, &shared);
         // `ok` (secret `d` range) and `sx_ok` (identity result) are secret-
         // dependent, so never branch on them: serialize unconditionally, then
@@ -1568,7 +1630,36 @@ pub mod signing {
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
-        sign_prehashed_ct_with_k_inner::<C, T>(private_key, digest, k, &[], out_r, out_s)
+        sign_prehashed_ct_with_k_inner::<C, T>(private_key, digest, k, &[], &[], out_r, out_s)
+    }
+
+    /// As [`sign_prehashed_ct_with_k`], but with explicit coordinate (`blind`)
+    /// and scalar (`scalar_blind`) blinding — the fully-blinded sign path with
+    /// a caller-supplied nonce, exposed for the ct-verify blinded fixtures.
+    ///
+    /// **`test-vectors` only, hazmat.** Same caveat as
+    /// [`sign_prehashed_ct_with_k`]; production draws the nonce and both
+    /// blinds internally via `RandomizedPrehashSigner`.
+    #[cfg(feature = "test-vectors")]
+    #[must_use]
+    pub fn sign_prehashed_ct_with_k_blinded<C: Curve, T: ConstantTimeInt>(
+        private_key: &[u8],
+        digest: &[u8],
+        k: &[u8],
+        blind: &[u8],
+        scalar_blind: &[u8],
+        out_r: &mut [u8],
+        out_s: &mut [u8],
+    ) -> bool {
+        sign_prehashed_ct_with_k_inner::<C, T>(
+            private_key,
+            digest,
+            k,
+            blind,
+            scalar_blind,
+            out_r,
+            out_s,
+        )
     }
 
     /// ECDH shared-secret core with a caller-supplied secret scalar `d` —
@@ -1596,13 +1687,19 @@ pub mod signing {
         digest: &[u8],
         k: &[u8],
         blind: &[u8],
+        scalar_blind: &[u8],
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
         const {
+            // Exactly field-width (not just `>=`): scalar blinding's `k' = k +
+            // r·n` uses the backend's widening multiply, whose `(lo, hi)` split
+            // lands at the field boundary only when `T` is the field width.
+            // Every signing backend already satisfies this (u8/u32/u64 limbs
+            // all sum to `ELEM_BYTES`); an oversized sign backend is unused.
             assert!(
-                core::mem::size_of::<T>() >= C::ELEM_BYTES,
-                "backend type narrower than the curve's field element"
+                core::mem::size_of::<T>() == C::ELEM_BYTES,
+                "signing backend must be exactly the curve's field width"
             );
             assert!(
                 C::P.len() == C::ELEM_BYTES
@@ -1625,6 +1722,7 @@ pub mod signing {
             || out_s.len() != eb
             || digest.is_empty()
             || (!blind.is_empty() && blind.len() != eb)
+            || (!scalar_blind.is_empty() && scalar_blind.len() != SCALAR_BLIND_BYTES)
         {
             return false;
         }
@@ -1676,8 +1774,20 @@ pub mod signing {
             }
         };
 
-        // r = x(k·G) mod n.
-        let kg = scalar_mul_ct(&fp, &a_res, &b3, eb * 8, &k_int, &g);
+        // r = x(k·G) mod n. Scalar blinding: multiply by k' = k + r·n instead
+        // of k — since n·G = O, k'·G = k·G, so `r` (and the whole signature)
+        // is unchanged, but the ladder processes a different, wider scalar
+        // each signature. `s` below still uses the true nonce `k` (k' ≡ k mod
+        // n). Empty `scalar_blind` => the plain nonce. The blinded `k'` is
+        // secret, so it is zeroized after the multiply.
+        let kg = if scalar_blind.is_empty() {
+            scalar_mul_ct(&fp, &a_res, &b3, k, &g)
+        } else {
+            let l = eb + SCALAR_BLIND_BYTES + 1;
+            let mut kp = zeroize::Zeroizing::new([0u8; MAX_ELEM + SCALAR_BLIND_BYTES + 1]);
+            blind_scalar::<T>(k, scalar_blind, C::N, &mut kp[..l]);
+            scalar_mul_ct(&fp, &a_res, &b3, &kp[..l], &g)
+        };
         let (rx, rx_ok) = affine_x_ct(&fp, &kg);
         ok &= rx_ok;
         let r = fn_.into_raw(&fn_.reduce(&rx));
@@ -1715,7 +1825,7 @@ pub mod signing {
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
-        sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, &[], &[], out_r, out_s)
+        sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, &[], &[], &[], out_r, out_s)
     }
 
     /// **Hedged** constant-time ECDSA signing: identical to
@@ -1745,7 +1855,7 @@ pub mod signing {
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
-        sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, added, &[], out_r, out_s)
+        sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, added, &[], &[], out_r, out_s)
     }
 
     fn sign_prehashed_ct_added<C: Curve, Tct: ConstantTimeInt, M: digest::KeyInit + digest::Mac>(
@@ -1753,6 +1863,7 @@ pub mod signing {
         digest: &[u8],
         added: &[u8],
         blind: &[u8],
+        scalar_blind: &[u8],
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
@@ -1769,6 +1880,7 @@ pub mod signing {
             digest,
             &k[..eb],
             blind,
+            scalar_blind,
             out_r,
             out_s,
         );
@@ -1782,6 +1894,7 @@ pub mod signing {
     /// faulted signature is never released. Taking the public key as an
     /// argument lets a repeat signer derive `d·G` once instead of per
     /// signature.
+    #[allow(clippy::too_many_arguments)] // three blinding/entropy inputs + key/digest/outputs
     fn sign_hedged_verified_with_pubkey<
         C: Curve,
         Tct: ConstantTimeInt,
@@ -1793,6 +1906,7 @@ pub mod signing {
         digest: &[u8],
         added: &[u8],
         blind: &[u8],
+        scalar_blind: &[u8],
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
@@ -1802,8 +1916,15 @@ pub mod signing {
             out_s.iter_mut().for_each(|b| *b = 0);
             return false;
         }
-        let signed =
-            sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, added, blind, out_r, out_s);
+        let signed = sign_prehashed_ct_added::<C, Tct, M>(
+            private_key,
+            digest,
+            added,
+            blind,
+            scalar_blind,
+            out_r,
+            out_s,
+        );
         // A fault in the sign math fails this verify. `pubkey_sec1` is
         // derived from the same secret key (freshly, or once at key
         // construction), so no caller-supplied key can mask a mismatch.
@@ -1882,6 +2003,7 @@ pub mod signing {
                 digest,
                 &[],
                 &[],
+                &[],
                 out_r,
                 out_s,
             )
@@ -1920,7 +2042,7 @@ pub mod signing {
                 y: fp.reduce(&from_be::<Tct>(C::GY)),
                 z: fp.one(),
             };
-            let q = scalar_mul_ct(&fp, &a_res, &b3, eb * 8, &d, &g);
+            let q = scalar_mul_ct(&fp, &a_res, &b3, &self.d[..eb], &g);
             let Some((qx, qy)) = affine_xy_ct(&fp, &q) else {
                 return false;
             };
@@ -2049,12 +2171,16 @@ pub mod signing {
         /// over one digest differ; empty `added` is the plain RFC 6979
         /// deterministic nonce. `blind` is public random bytes that
         /// projective-randomize the base point (DPA coordinate blinding);
-        /// empty `blind` leaves the point unblinded.
+        /// empty `blind` leaves the point unblinded. `scalar_blind` is an
+        /// 8-byte (64-bit) random factor `r` that blinds the nonce as
+        /// `k + r·n` for the scalar multiply (DPA scalar blinding); empty
+        /// leaves the scalar unblinded.
         #[must_use]
         pub fn sign_prehashed_hedged(
             &self,
             added: &[u8],
             blind: &[u8],
+            scalar_blind: &[u8],
             digest: &[u8],
             out_r: &mut [u8],
             out_s: &mut [u8],
@@ -2065,6 +2191,7 @@ pub mod signing {
                 digest,
                 added,
                 blind,
+                scalar_blind,
                 out_r,
                 out_s,
             )

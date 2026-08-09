@@ -21,9 +21,9 @@ mod neg_controls;
 use core::hint::black_box;
 use fixed_bigint::FixedUInt;
 use krabiecdsa::const_num_traits::Ct;
-use krabiecdsa::signing::sign_prehashed_ct_with_k;
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
+use krabiecdsa::signing::sign_prehashed_ct_with_k;
 
 #[cfg(feature = "deterministic")]
 use hmac::Hmac;
@@ -118,6 +118,45 @@ macro_rules! panic_audit_ecdh_fixture {
 
 panic_audit_ecdh_fixture!(panic_audit__ecdh_p256__fb32, P256, FixedUInt<u32, 8, Ct>, 32, D256, PEER256);
 panic_audit_ecdh_fixture!(panic_audit__ecdh_p384__fb32, P384, FixedUInt<u32, 12, Ct>, 48, D384, PEER384);
+
+// Fully-blinded sign (`sign_prehashed_ct_with_k_blinded`): the coordinate-λ
+// base randomization plus the `k' = k + r·n` scalar blinding (`blind_scalar`
+// + the widened ladder). λ and `r` are public; audited unconditionally.
+const LAMBDA256: [u8; 32] = hx("0f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff00");
+const LAMBDA384: [u8; 48] = hx("0f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff00fedcba98765432100123456789abcdef");
+const SBLIND: [u8; 8] = hx("0123456789abcdef");
+
+macro_rules! panic_audit_blinded_fixture {
+    ($name:ident, $curve:ty, $carrier:ty, $bytes:literal, $d:expr, $k:expr, $digest:expr, $lambda:expr) => {
+        /// # Safety
+        /// `out_ptr` must be a valid pointer to a writable byte.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(out_ptr: *mut u8) {
+            let d = black_box($d);
+            let k = black_box($k);
+            let digest = black_box($digest);
+            let lambda = black_box($lambda);
+            let sb = black_box(SBLIND);
+            let mut r = [0u8; $bytes];
+            let mut s = [0u8; $bytes];
+            let ok = krabiecdsa::signing::sign_prehashed_ct_with_k_blinded::<$curve, $carrier>(
+                &d[..],
+                &digest[..],
+                &k[..],
+                &lambda[..],
+                &sb[..],
+                &mut r,
+                &mut s,
+            );
+            black_box(&r);
+            black_box(&s);
+            unsafe { *out_ptr = black_box(ok as u8) }
+        }
+    };
+}
+
+panic_audit_blinded_fixture!(panic_audit__ecdsa_sign_blinded_p256__fb32, P256, FixedUInt<u32, 8, Ct>, 32, D256, K256, DIGEST256, LAMBDA256);
+panic_audit_blinded_fixture!(panic_audit__ecdsa_sign_blinded_p384__fb32, P384, FixedUInt<u32, 12, Ct>, 48, D384, K384, DIGEST384, LAMBDA384);
 
 // Full RFC 6979 deterministic sign (nonce derivation + sign). Pulls the
 // HMAC-DRBG (`hmac`/`sha2`) into the audited archive — krabiecdsa's own

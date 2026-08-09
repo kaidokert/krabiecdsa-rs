@@ -30,6 +30,11 @@ deterministic = ["dep:hmac", "dep:sha2"]
 # symbols) — off by default so the driver's ladder count is unchanged;
 # the taint harness enables it for the extra ECDH-path coverage.
 ecdh = []
+# Fully-blinded sign fixtures (coordinate λ + scalar `k + r·n`). Reuse the
+# sign path's `scalar_mul_ct` monomorphizations, so like `ecdh` they add no
+# asm-ladder symbol — off by default (driver count unchanged); the taint
+# harness enables it to cover `blind_scalar` + the widened ladder.
+scalar-blind = []
 
 [dependencies]
 krabiecdsa = { path = "../../ecdsa", default-features = false, features = ["test-vectors"] }

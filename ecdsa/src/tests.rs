@@ -33,7 +33,13 @@ fn coord_blinding_is_transparent() {
     for blind in blinds {
         let (mut r, mut s) = ([0u8; 32], [0u8; 32]);
         assert!(sign_prehashed_ct_with_k_inner::<crate::p256::P256, U256Ct>(
-            &d, &digest, &k, blind, &mut r, &mut s
+            &d,
+            &digest,
+            &k,
+            blind,
+            &[],
+            &mut r,
+            &mut s
         ));
         assert_eq!(r, want_r, "r changed under blind (len {})", blind.len());
         assert_eq!(s, want_s, "s changed under blind (len {})", blind.len());
@@ -45,9 +51,66 @@ fn coord_blinding_is_transparent() {
         let (mut r, mut s) = ([0u8; 32], [0u8; 32]);
         assert!(
             !sign_prehashed_ct_with_k_inner::<crate::p256::P256, U256Ct>(
-                &d, &digest, &k, bad, &mut r, &mut s
+                &d,
+                &digest,
+                &k,
+                bad,
+                &[],
+                &mut r,
+                &mut s
             ),
             "oversized/undersized blind (len {}) must reject",
+            bad.len()
+        );
+    }
+}
+
+// Scalar-blinding transparency. Multiplying by k' = k + r·n (n·G = O) must not
+// change the signature: for any r — and combined with coordinate blinding —
+// the RFC 6979 §A.2.5 "sample" signature is reproduced. Wrong-width r rejects.
+#[test]
+fn scalar_blinding_is_transparent() {
+    use crate::signing::sign_prehashed_ct_with_k_inner;
+    let d = hx::<32>("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721");
+    let k = hx::<32>("a6e3c57dd01abe90086538398355dd4c3b17aa873382b0f24d6129493d8aad60");
+    let digest = hx::<32>("af2bdbe1aa9b6ec1e2ade1d694f41fc71a831d0268e9891562113d8a62add1bf");
+    let want_r = hx::<32>("efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716");
+    let want_s = hx::<32>("f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8");
+    let lambda = hx::<32>("0123456789abcdeffedcba9876543210112233445566778899aabbccddeeff00");
+
+    let rs: [[u8; 8]; 5] = [
+        [0; 8],
+        [0, 0, 0, 0, 0, 0, 0, 1],
+        [0xff; 8],
+        [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef],
+        [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe],
+    ];
+    // scalar blinding alone, then combined with coordinate blinding.
+    for coord in [&[][..], &lambda[..]] {
+        for r in rs {
+            let (mut sr, mut ss) = ([0u8; 32], [0u8; 32]);
+            assert!(sign_prehashed_ct_with_k_inner::<crate::p256::P256, U256Ct>(
+                &d, &digest, &k, coord, &r, &mut sr, &mut ss
+            ));
+            assert_eq!(sr, want_r, "r changed under scalar blind");
+            assert_eq!(ss, want_s, "s changed under scalar blind");
+        }
+    }
+
+    // A scalar_blind of the wrong width must fail closed.
+    for bad in [&[0u8; 7][..], &[0u8; 9][..], &[0u8; 16][..]] {
+        let (mut sr, mut ss) = ([0u8; 32], [0u8; 32]);
+        assert!(
+            !sign_prehashed_ct_with_k_inner::<crate::p256::P256, U256Ct>(
+                &d,
+                &digest,
+                &k,
+                &[],
+                bad,
+                &mut sr,
+                &mut ss
+            ),
+            "wrong-width scalar_blind (len {}) must reject",
             bad.len()
         );
     }
