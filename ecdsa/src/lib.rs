@@ -412,8 +412,8 @@ macro_rules! define_curve {
                     rng: &mut R,
                     prehash: &[u8],
                 ) -> Result<[u8; 2 * $eb], signature::Error> {
-                    // 256 bits of hedge entropy for the RFC 6979 §3.6 nonce
-                    // hedge, plus one field element of coordinate-blinding λ.
+                    // 256 bits of hedge entropy for the RFC 6979 §3.6 nonce,
+                    // plus one field element of coordinate-blinding λ.
                     // Both are wiped after use. A weak or all-zero hedge draw
                     // degrades to RFC 6979 determinism, never to nonce reuse
                     // (key + digest still seed the DRBG); a weak λ only weakens
