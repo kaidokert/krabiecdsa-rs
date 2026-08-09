@@ -12,12 +12,12 @@ use krabi_caliper::report::Field;
 use krabi_caliper::stack::{StackProbe, paint_cortex_m_runtime};
 use krabi_caliper::suite::{PairedSuite, PairedSuiteConfig, PairedSuiteFields};
 use krabiecdsa::const_num_traits::Ct;
+use krabiecdsa::p256::{self, P256};
 use krabiecdsa::signing::PrehashSigningKey;
 #[cfg(feature = "fix-nonce")]
 use krabiecdsa::signing::derive_nonce_rfc6979_ct;
 #[cfg(feature = "fix-fixedsign")]
 use krabiecdsa::signing::sign_prehashed_ct_with_k;
-use krabiecdsa::p256::{self, P256};
 use sha2::Sha256;
 use stm32f4xx_hal::pac;
 use stm32f4xx_hal::prelude::*;
@@ -147,11 +147,7 @@ fn fixed_nonce_sign_once(key: &[u8; 32]) -> bool {
 fn whole_sign_once(key: &P256SigningKey) -> bool {
     let mut r = [0u8; 32];
     let mut s = [0u8; 32];
-    let ok = black_box(key).sign_prehashed(
-        black_box(&DIGEST),
-        &mut r,
-        &mut s,
-    );
+    let ok = black_box(key).sign_prehashed(black_box(&DIGEST), &mut r, &mut s);
     let _ = black_box((r, s));
     ok
 }

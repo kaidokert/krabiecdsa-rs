@@ -117,6 +117,60 @@ taint_ecdh_fixture!(
     ct_fixtures::PEER384
 );
 
+// Fully-blinded sign — taints `d` and `k` through `blind_scalar` (k' = k +
+// r·n) and the widened ladder. λ and `r` are public per-signature randomness,
+// never tainted; a secret-dependent branch in the k' computation or the wider
+// ladder trips memcheck.
+macro_rules! taint_blinded_fixture {
+    ($name:ident, $bytes:literal, $lbytes:literal, $d:expr, $k:expr, $digest:expr, $lambda:expr) => {
+        unsafe extern "C" {
+            fn $name(
+                d_ptr: *const [u8; $bytes],
+                k_ptr: *const [u8; $bytes],
+                digest_ptr: *const [u8; $bytes],
+                lambda_ptr: *const [u8; $lbytes],
+                sblind_ptr: *const [u8; 8],
+                r_ptr: *mut [u8; $bytes],
+                s_ptr: *mut [u8; $bytes],
+            );
+        }
+        ctgrind_fixture!($name, {
+            let d = $d;
+            let k = $k;
+            let digest = $digest;
+            let lambda = $lambda;
+            let sblind = ct_fixtures::SBLIND;
+            let mut r = [0u8; $bytes];
+            let mut s = [0u8; $bytes];
+            taint_val(&d);
+            taint_val(&k);
+            unsafe { $name(&d, &k, &digest, &lambda, &sblind, &mut r, &mut s) }
+            untaint_val(&r);
+            untaint_val(&s);
+            let _ = black_box((r, s));
+        });
+    };
+}
+
+taint_blinded_fixture!(
+    ct_fix__ecdsa_sign_blinded_p256__fb32,
+    32,
+    32,
+    ct_fixtures::D256,
+    ct_fixtures::K256,
+    ct_fixtures::DIGEST256,
+    ct_fixtures::LAMBDA256
+);
+taint_blinded_fixture!(
+    ct_fix__ecdsa_sign_blinded_p384__fb32,
+    48,
+    48,
+    ct_fixtures::D384,
+    ct_fixtures::K384,
+    ct_fixtures::DIGEST384,
+    ct_fixtures::LAMBDA384
+);
+
 // Full RFC 6979 deterministic sign — taints `d` only; the nonce is
 // derived internally by the constant-time RFC 6979 DRBG. This taints the
 // secret key through the *whole* deterministic sign, not just the scalar

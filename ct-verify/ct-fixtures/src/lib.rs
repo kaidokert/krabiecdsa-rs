@@ -45,9 +45,9 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 use core::hint::black_box;
 use fixed_bigint::FixedUInt;
 use krabiecdsa::const_num_traits::Ct;
-use krabiecdsa::signing::sign_prehashed_ct_with_k;
 use krabiecdsa::p256::P256;
 use krabiecdsa::p384::P384;
+use krabiecdsa::signing::sign_prehashed_ct_with_k;
 
 // --- deterministic secret material -----------------------------------
 //
@@ -203,6 +203,72 @@ macro_rules! ct_ecdh_fixture {
 ct_ecdh_fixture!(ct_fix__ecdh_p256__fb32, P256, FixedUInt<u32, 8, Ct>, 32, 65);
 #[cfg(feature = "ecdh")]
 ct_ecdh_fixture!(ct_fix__ecdh_p384__fb32, P384, FixedUInt<u32, 12, Ct>, 48, 97);
+
+// --- fully-blinded sign (coordinate λ + scalar k' = k + r·n) -----------
+//
+// Taints `d` and `k` through `blind_scalar` and the widened ladder. λ and
+// `r` are public (RNG-derived per signature, never secret), so they are
+// not tainted. Reuses the same `scalar_mul_ct` monomorphizations as the
+// plain sign — no new ladder symbol — so it is gated behind `scalar-blind`
+// (the taint harness enables it; the asm-ladder driver does not, keeping
+// its expected symbol count unchanged).
+#[cfg(feature = "scalar-blind")]
+pub const LAMBDA256: [u8; 32] =
+    hx("0f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff00");
+#[cfg(feature = "scalar-blind")]
+pub const LAMBDA384: [u8; 48] = hx("0f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff00fedcba98765432100123456789abcdef");
+#[cfg(feature = "scalar-blind")]
+pub const SBLIND: [u8; 8] = hx("0123456789abcdef");
+
+#[cfg(feature = "scalar-blind")]
+macro_rules! ct_sign_blinded_fixture {
+    ($name:ident, $curve:ty, $carrier:ty, $bytes:literal, $lbytes:literal) => {
+        /// Fully-blinded sign driven by the secret `d`/`k` against public
+        /// coordinate-λ and scalar-`r` blinds.
+        ///
+        /// # Safety
+        /// All pointers are valid, aligned arrays of the stated widths
+        /// (`digest`/`r`/`s`/`d`/`k` are `$bytes`; `lambda` is `$lbytes`;
+        /// `sblind` is 8).
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(
+            d_ptr: *const [u8; $bytes],
+            k_ptr: *const [u8; $bytes],
+            digest_ptr: *const [u8; $bytes],
+            lambda_ptr: *const [u8; $lbytes],
+            sblind_ptr: *const [u8; 8],
+            r_ptr: *mut [u8; $bytes],
+            s_ptr: *mut [u8; $bytes],
+        ) {
+            let d = black_box(unsafe { *d_ptr });
+            let k = black_box(unsafe { *k_ptr });
+            let digest = unsafe { *digest_ptr };
+            let lambda = unsafe { *lambda_ptr };
+            let sblind = unsafe { *sblind_ptr };
+            let mut r = [0u8; $bytes];
+            let mut s = [0u8; $bytes];
+            let ok = krabiecdsa::signing::sign_prehashed_ct_with_k_blinded::<$curve, $carrier>(
+                black_box(&d[..]),
+                &digest[..],
+                black_box(&k[..]),
+                &lambda[..],
+                &sblind[..],
+                &mut r,
+                &mut s,
+            );
+            unsafe {
+                *r_ptr = black_box(r);
+                *s_ptr = black_box(s);
+            }
+            let _ = black_box(ok);
+        }
+    };
+}
+
+#[cfg(feature = "scalar-blind")]
+ct_sign_blinded_fixture!(ct_fix__ecdsa_sign_blinded_p256__fb32, P256, FixedUInt<u32, 8, Ct>, 32, 32);
+#[cfg(feature = "scalar-blind")]
+ct_sign_blinded_fixture!(ct_fix__ecdsa_sign_blinded_p384__fb32, P384, FixedUInt<u32, 12, Ct>, 48, 48);
 
 // --- full RFC 6979 deterministic sign ---------------------------------
 //
