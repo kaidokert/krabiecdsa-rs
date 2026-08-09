@@ -1449,10 +1449,9 @@ pub mod signing {
                 ResidueCt::cswap(bit, &mut r.z, &mut r_add.z);
             }};
         }
-        // Walk the big-endian bytes by iterator — a single loop (the ct-verify
-        // ladder budgets exactly this one branch), no indexing (so no bounds-
-        // check panic). The 8 bits per byte are unrolled MSB-first, keeping
-        // the inner work straight-line and branch-free.
+        // The 8 bits per byte are unrolled so the byte iterator stays the
+        // loop's single branch (the ct-verify ladder's budget) and the inner
+        // work stays branch-free.
         for &byte in scalar {
             step!((byte >> 7) & 1);
             step!((byte >> 6) & 1);
