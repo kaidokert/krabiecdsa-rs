@@ -944,45 +944,61 @@ mod ecdh_tests {
     fn ecdh_roundtrip_agrees() {
         let a = EphemeralSecret::<P256, U256Ct>::random(&mut CountRng(1)).unwrap();
         let b = EphemeralSecret::<P256, U256Ct>::random(&mut CountRng(0x80)).unwrap();
-        let sa = a
-            .diffie_hellman(b.public_key().unwrap().as_sec1_bytes())
-            .unwrap();
-        let sb = b
-            .diffie_hellman(a.public_key().unwrap().as_sec1_bytes())
-            .unwrap();
+        // Grab both public keys before agreement consumes the secrets.
+        let a_pub = a.public_key().unwrap();
+        let b_pub = b.public_key().unwrap();
+        let sa = a.diffie_hellman(b_pub.as_sec1_bytes()).unwrap();
+        let sb = b.diffie_hellman(a_pub.as_sec1_bytes()).unwrap();
         assert_eq!(sa.as_bytes(), sb.as_bytes());
     }
 
     #[test]
     fn ecdh_rejects_invalid_peer() {
-        let a = eph::<P256, U256Ct>(&hx::<32>(
-            "3d4c99e2be01c8bf2fae12350491bf8e166abaea13f942db5f596396d8ca1bc0",
-        ));
+        const D: &str = "3d4c99e2be01c8bf2fae12350491bf8e166abaea13f942db5f596396d8ca1bc0";
+        // `diffie_hellman` consumes the one-shot secret, so each case gets a
+        // fresh ephemeral (same scalar).
+        let fresh = || eph::<P256, U256Ct>(&hx::<32>(D));
         let good = hx::<65>(
             "04c00cebaf052b8d8720f20639a891a6093727d460631d1e1ba909e0c4b41687b508abf40702be0e8fb6c6139737fcfee5d67a00d291dc7588faf3aa92307b27b7",
         );
         assert!(
-            a.diffie_hellman(&good).is_some(),
+            fresh().diffie_hellman(&good).is_some(),
             "sanity: good peer agrees"
         );
 
         // wrong SEC1 prefix (compressed / not 0x04)
         let mut bad = good;
         bad[0] = 0x02;
-        assert!(a.diffie_hellman(&bad).is_none(), "bad prefix");
+        assert!(fresh().diffie_hellman(&bad).is_none(), "bad prefix");
 
         // off-curve: flip a low bit of Y
         let mut bad = good;
         bad[64] ^= 1;
-        assert!(a.diffie_hellman(&bad).is_none(), "off-curve");
+        assert!(fresh().diffie_hellman(&bad).is_none(), "off-curve");
 
         // X == p (out of range: must be < p)
         let mut bad = good;
         bad[1..33].copy_from_slice(P256::P);
-        assert!(a.diffie_hellman(&bad).is_none(), "X == p");
+        assert!(fresh().diffie_hellman(&bad).is_none(), "X == p");
 
         // truncated key_share
-        assert!(a.diffie_hellman(&good[..64]).is_none(), "short");
-        assert!(a.diffie_hellman(&[]).is_none(), "empty");
+        assert!(fresh().diffie_hellman(&good[..64]).is_none(), "short");
+        assert!(fresh().diffie_hellman(&[]).is_none(), "empty");
+    }
+
+    // Zero-output-on-failure contract: a nonzero `out` buffer must come back
+    // fully zeroed when the peer point is rejected (raw hazmat entry point).
+    #[test]
+    #[cfg(feature = "test-vectors")]
+    fn ecdh_zeroes_out_on_failure() {
+        use crate::signing::ecdh_diffie_hellman_ct;
+        let d = hx::<32>("3d4c99e2be01c8bf2fae12350491bf8e166abaea13f942db5f596396d8ca1bc0");
+        let mut good = hx::<65>(
+            "04c00cebaf052b8d8720f20639a891a6093727d460631d1e1ba909e0c4b41687b508abf40702be0e8fb6c6139737fcfee5d67a00d291dc7588faf3aa92307b27b7",
+        );
+        good[64] ^= 1; // off-curve → rejected
+        let mut out = [0xabu8; 32];
+        assert!(!ecdh_diffie_hellman_ct::<P256, U256Ct>(&d, &good, &mut out));
+        assert_eq!(out, [0u8; 32], "out must be zeroed on failure");
     }
 }

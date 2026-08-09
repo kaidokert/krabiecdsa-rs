@@ -1478,8 +1478,14 @@ pub mod signing {
             );
         }
         let eb = C::ELEM_BYTES;
-        if d.len() != eb || out.len() != eb || peer_sec1.len() != 1 + 2 * eb || peer_sec1[0] != 0x04
-        {
+        if out.len() != eb {
+            return false;
+        }
+        // Zero `out` up front so every failure path leaves it cleared (the
+        // documented contract) — the secret-validity outcome is masked in
+        // branchlessly at the end, never used to pick a failure branch.
+        out.iter_mut().for_each(|b| *b = 0);
+        if d.len() != eb || peer_sec1.len() != 1 + 2 * eb || peer_sec1[0] != 0x04 {
             return false;
         }
         let p = from_be::<T>(C::P);
@@ -1518,12 +1524,17 @@ pub mod signing {
         };
         let shared = scalar_mul_ct(&fp, &a_res, &b3, eb * 8, &d_int, &peer);
         let (sx, sx_ok) = affine_x_ct(&fp, &shared);
-        if !bool::from(ok & sx_ok) {
-            out.iter_mut().for_each(|b| *b = 0);
-            return false;
-        }
+        // `ok` (secret `d` range) and `sx_ok` (identity result) are secret-
+        // dependent, so never branch on them: serialize unconditionally, then
+        // mask the bytes to zero on failure with a branchless select and fold
+        // validity into the return value — the shape the sign path uses.
+        let valid = ok & sx_ok;
         to_be_ct::<T>(&sx, out);
-        true
+        for b in out.iter_mut() {
+            let enc = *b;
+            *b = subtle::ConditionallySelectable::conditional_select(&0u8, &enc, valid);
+        }
+        bool::from(valid)
     }
 
     /// **Constant-time** ECDSA signing over curve `C` with the Ct backend
@@ -2089,13 +2100,14 @@ pub mod ecdh {
                     "backend type narrower than the curve's field element"
                 );
             }
+            // A uniform draw lands in [1, n−1] with probability ≥ 1/2 per try
+            // (n > p/2 for these curves), so this bound is a fail-closed
+            // backstop against a stuck RNG, never a practical limit.
+            const REJECTION_TRIES: usize = 128;
             let eb = C::ELEM_BYTES;
             let n = from_be::<T>(C::N);
             let mut scalar = Zeroizing::new([0u8; MAX_ELEM]);
-            // Rejection sampling: a uniform draw lands in [1, n−1] with
-            // probability ≥ 1/2 per try (n > p/2 for these curves), so 128
-            // tries is a fail-closed backstop, never a practical limit.
-            for _ in 0..128 {
+            for _ in 0..REJECTION_TRIES {
                 signature::rand_core::TryRng::try_fill_bytes(rng, &mut scalar[..eb])
                     .map_err(|_| signature::Error::new())?;
                 let d = from_be::<T>(&scalar[..eb]);
@@ -2124,11 +2136,11 @@ pub mod ecdh {
             })
         }
 
-        /// Agree on `x(d·P)` from the peer's SEC1-uncompressed `key_share`.
-        /// Returns `None` if the peer point is malformed, out of range,
-        /// off-curve, or the identity.
+        /// Agree on `x(d·P)` from the peer's SEC1-uncompressed `key_share`,
+        /// consuming the one-shot secret. Returns `None` if the peer point is
+        /// malformed, out of range, off-curve, or the identity.
         #[must_use]
-        pub fn diffie_hellman(&self, peer_sec1: &[u8]) -> Option<SharedSecret> {
+        pub fn diffie_hellman(self, peer_sec1: &[u8]) -> Option<SharedSecret> {
             let eb = C::ELEM_BYTES;
             let mut bytes = Zeroizing::new([0u8; MAX_ELEM]);
             if !ecdh_shared_x_ct::<C, T>(&self.scalar[..eb], peer_sec1, &mut bytes[..eb]) {
