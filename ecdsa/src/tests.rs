@@ -11,6 +11,48 @@ type U512 = FixedUInt<u32, 16>;
 type U256Ct = FixedUInt<u32, 8, const_num_traits::Ct>;
 type U384Ct = FixedUInt<u32, 12, const_num_traits::Ct>;
 
+// Blinding transparency. Projective-coordinate randomization must not change
+// the signature: with a fixed nonce, any λ (incl. one > p, which stresses the
+// full-width reduce) reproduces the RFC 6979 §A.2.5 "sample" signature.
+#[test]
+fn coord_blinding_is_transparent() {
+    use crate::signing::sign_prehashed_ct_with_k_inner;
+    let d = hx::<32>("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721");
+    let k = hx::<32>("a6e3c57dd01abe90086538398355dd4c3b17aa873382b0f24d6129493d8aad60");
+    let digest = hx::<32>("af2bdbe1aa9b6ec1e2ade1d694f41fc71a831d0268e9891562113d8a62add1bf");
+    let want_r = hx::<32>("efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716");
+    let want_s = hx::<32>("f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8");
+
+    let full = hx::<32>("0123456789abcdeffedcba9876543210112233445566778899aabbccddeeff00");
+    // `one` is the field value 1 (big-endian), exercising a nonempty blind
+    // whose λ reduces to the unblinded scale; `[1u8; 32]` (0x0101…01) is a
+    // separate arbitrary nonzero case.
+    let mut one = [0u8; 32];
+    one[31] = 1;
+    let blinds: [&[u8]; 6] = [&[], &[0u8; 32], &one, &[1u8; 32], &[0xffu8; 32], &full];
+    for blind in blinds {
+        let (mut r, mut s) = ([0u8; 32], [0u8; 32]);
+        assert!(sign_prehashed_ct_with_k_inner::<crate::p256::P256, U256Ct>(
+            &d, &digest, &k, blind, &mut r, &mut s
+        ));
+        assert_eq!(r, want_r, "r changed under blind (len {})", blind.len());
+        assert_eq!(s, want_s, "s changed under blind (len {})", blind.len());
+    }
+
+    // A nonempty blind of the wrong width must fail closed, not silently
+    // truncate to zero and sign unblinded.
+    for bad in [&[0u8; 33][..], &[0u8; 31][..], &[7u8; 64][..]] {
+        let (mut r, mut s) = ([0u8; 32], [0u8; 32]);
+        assert!(
+            !sign_prehashed_ct_with_k_inner::<crate::p256::P256, U256Ct>(
+                &d, &digest, &k, bad, &mut r, &mut s
+            ),
+            "oversized/undersized blind (len {}) must reject",
+            bad.len()
+        );
+    }
+}
+
 /// One openssl-produced known-good signature plus the curve's
 /// precomputed `n − s` (for the malleability-acceptance check).
 struct Vector {

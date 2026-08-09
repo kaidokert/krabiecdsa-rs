@@ -412,17 +412,22 @@ macro_rules! define_curve {
                     rng: &mut R,
                     prehash: &[u8],
                 ) -> Result<[u8; 2 * $eb], signature::Error> {
-                    // 256 bits of hedge entropy, wiped after use. A weak or
-                    // all-zero draw degrades to RFC 6979 determinism, never
-                    // to nonce reuse (key + digest still seed the DRBG), so
-                    // a failing RNG can't be catastrophic — but it must not
-                    // panic, hence the fallible fill mapped to an error.
+                    // 256 bits of hedge entropy for the RFC 6979 §3.6 nonce,
+                    // plus one field element of coordinate-blinding λ.
+                    // Both are wiped after use. A weak or all-zero hedge draw
+                    // degrades to RFC 6979 determinism, never to nonce reuse
+                    // (key + digest still seed the DRBG); a weak λ only weakens
+                    // the DPA blinding, never correctness. Fallible fills mapped
+                    // to an error — the RNG must not panic.
                     let mut z = zeroize::Zeroizing::new([0u8; 32]);
+                    let mut lambda = zeroize::Zeroizing::new([0u8; $eb]);
                     signature::rand_core::TryRng::try_fill_bytes(rng, &mut z[..])
+                        .map_err(|_| signature::Error::new())?;
+                    signature::rand_core::TryRng::try_fill_bytes(rng, &mut lambda[..])
                         .map_err(|_| signature::Error::new())?;
                     let mut sig = [0u8; 2 * $eb];
                     let (r, s) = sig.split_at_mut($eb);
-                    if self.sign_prehashed_hedged(&z[..], prehash, r, s) {
+                    if self.sign_prehashed_hedged(&z[..], &lambda[..], prehash, r, s) {
                         Ok(sig)
                     } else {
                         Err(signature::Error::new())
@@ -1013,15 +1018,19 @@ where
 ///
 /// The constant-time guarantee is **timing only**. It does NOT cover:
 ///
-/// - **Power / EM side channels (DPA/CPA).** There is no scalar blinding or
-///   projective-coordinate randomization, so an attacker with power/EM trace
-///   access to the device is not defended. [`signing::RandomizedSigningKey`]
-///   hedges the nonce (fresh entropy per signature, RFC 6979 §3.6) and runs
-///   a verify-after-sign fault check — defeating same-message trace
-///   averaging and the deterministic-ECDSA fault break — but that is
-///   defense-in-depth, not DPA resistance. Blinding is planned as a
-///   follow-up; until then, deployments exposed to a physical attacker
-///   should account for this.
+/// - **Power / EM side channels (DPA/CPA).** [`signing::RandomizedSigningKey`]
+///   applies **projective-coordinate randomization**: each signature draws a
+///   random field element λ from the RNG and scales the base point
+///   `(X:Y:Z) → (λX:λY:λZ)`, so every scalar-multiply trace runs on different
+///   field values — this defeats trace averaging (DPA/CPA) on the point
+///   arithmetic. It also hedges the nonce (RFC 6979 §3.6) and fault-checks the
+///   output. Two caveats: **(1)** the deterministic
+///   [`signing::PrehashSigningKey`] path has no RNG and is therefore
+///   *unblinded* — power/EM-exposed deployments should use the randomized
+///   signer; **(2)** *scalar* blinding (`k + r·n`) is not yet applied, and the
+///   coordinate blinding's effectiveness has not yet been validated on
+///   hardware (power-trace TVLA is a planned follow-up). Treat the DPA
+///   resistance as designed-in but not-yet-measured.
 /// - **Comprehensive fault attacks.** Only the randomized path re-verifies
 ///   its own output.
 pub mod signing {
@@ -1559,7 +1568,7 @@ pub mod signing {
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
-        sign_prehashed_ct_with_k_inner::<C, T>(private_key, digest, k, out_r, out_s)
+        sign_prehashed_ct_with_k_inner::<C, T>(private_key, digest, k, &[], out_r, out_s)
     }
 
     /// ECDH shared-secret core with a caller-supplied secret scalar `d` —
@@ -1582,10 +1591,11 @@ pub mod signing {
     /// Core RCB signature math given the nonce `k` — always compiled; the
     /// implementation behind the deterministic/hedged sign and the
     /// `test-vectors` sign-with-`k` entrypoint.
-    fn sign_prehashed_ct_with_k_inner<C: Curve, T: ConstantTimeInt>(
+    pub(crate) fn sign_prehashed_ct_with_k_inner<C: Curve, T: ConstantTimeInt>(
         private_key: &[u8],
         digest: &[u8],
         k: &[u8],
+        blind: &[u8],
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
@@ -1605,11 +1615,16 @@ pub mod signing {
             );
         }
         let eb = C::ELEM_BYTES;
+        // A nonempty `blind` must be exactly one field element wide: a wider
+        // slice would silently truncate to zero in `from_be` and collapse to
+        // the unblinded path, disabling the DPA protection the caller asked
+        // for. Fail closed instead. (Empty = deliberately unblinded.)
         if private_key.len() != eb
             || k.len() != eb
             || out_r.len() != eb
             || out_s.len() != eb
             || digest.is_empty()
+            || (!blind.is_empty() && blind.len() != eb)
         {
             return false;
         }
@@ -1633,10 +1648,32 @@ pub mod signing {
         let a_res = fp.reduce(&from_be::<T>(C::A));
         let b_res = fp.reduce(&from_be::<T>(C::B));
         let b3 = fp.add(&fp.add(&b_res, &b_res), &b_res);
-        let g = PointCt {
-            x: fp.reduce(&from_be::<T>(C::GX)),
-            y: fp.reduce(&from_be::<T>(C::GY)),
-            z: fp.one(),
+        // Projective-coordinate randomization: (X:Y:Z) ~ (λX:λY:λZ), so the
+        // affine result x(k·G) = X/Z is unchanged, but every ladder trace runs
+        // on different field values — defeating DPA/CPA averaging on the point
+        // arithmetic. `blind` is public random bytes (the caller's RNG); empty
+        // => unblinded (z = 1). λ = 0 would collapse the point, so guard it —
+        // λ is public, so that branch reveals nothing secret.
+        let gx = fp.reduce(&from_be::<T>(C::GX));
+        let gy = fp.reduce(&from_be::<T>(C::GY));
+        let g = if blind.is_empty() {
+            PointCt {
+                x: gx,
+                y: gy,
+                z: fp.one(),
+            }
+        } else {
+            let lambda = fp.reduce(&from_be::<T>(blind));
+            let lambda = if bool::from(fp.into_raw(&lambda).ct_is_zero()) {
+                fp.one()
+            } else {
+                lambda
+            };
+            PointCt {
+                x: fp.mul(&gx, &lambda),
+                y: fp.mul(&gy, &lambda),
+                z: lambda,
+            }
         };
 
         // r = x(k·G) mod n.
@@ -1678,7 +1715,7 @@ pub mod signing {
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
-        sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, &[], out_r, out_s)
+        sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, &[], &[], out_r, out_s)
     }
 
     /// **Hedged** constant-time ECDSA signing: identical to
@@ -1708,13 +1745,14 @@ pub mod signing {
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
-        sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, added, out_r, out_s)
+        sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, added, &[], out_r, out_s)
     }
 
     fn sign_prehashed_ct_added<C: Curve, Tct: ConstantTimeInt, M: digest::KeyInit + digest::Mac>(
         private_key: &[u8],
         digest: &[u8],
         added: &[u8],
+        blind: &[u8],
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
@@ -1726,8 +1764,14 @@ pub mod signing {
         // the leak up into this frame; `&` keeps it branch-free.
         let derived =
             derive_nonce_rfc6979_ct_added::<C, Tct, M>(private_key, digest, added, &mut k[..eb]);
-        let signed =
-            sign_prehashed_ct_with_k_inner::<C, Tct>(private_key, digest, &k[..eb], out_r, out_s);
+        let signed = sign_prehashed_ct_with_k_inner::<C, Tct>(
+            private_key,
+            digest,
+            &k[..eb],
+            blind,
+            out_r,
+            out_s,
+        );
         derived & signed
     }
 
@@ -1748,6 +1792,7 @@ pub mod signing {
         pubkey_sec1: &[u8],
         digest: &[u8],
         added: &[u8],
+        blind: &[u8],
         out_r: &mut [u8],
         out_s: &mut [u8],
     ) -> bool {
@@ -1757,7 +1802,8 @@ pub mod signing {
             out_s.iter_mut().for_each(|b| *b = 0);
             return false;
         }
-        let signed = sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, added, out_r, out_s);
+        let signed =
+            sign_prehashed_ct_added::<C, Tct, M>(private_key, digest, added, blind, out_r, out_s);
         // A fault in the sign math fails this verify. `pubkey_sec1` is
         // derived from the same secret key (freshly, or once at key
         // construction), so no caller-supplied key can mask a mismatch.
@@ -1834,6 +1880,7 @@ pub mod signing {
             sign_prehashed_ct_added::<C, Tct, M>(
                 &self.d[..C::ELEM_BYTES],
                 digest,
+                &[],
                 &[],
                 out_r,
                 out_s,
@@ -2000,11 +2047,14 @@ pub mod signing {
         /// releasing it (zeroing the outputs on a fault). `added` is fresh
         /// entropy — distinct entropy per call makes repeated signatures
         /// over one digest differ; empty `added` is the plain RFC 6979
-        /// deterministic nonce.
+        /// deterministic nonce. `blind` is public random bytes that
+        /// projective-randomize the base point (DPA coordinate blinding);
+        /// empty `blind` leaves the point unblinded.
         #[must_use]
         pub fn sign_prehashed_hedged(
             &self,
             added: &[u8],
+            blind: &[u8],
             digest: &[u8],
             out_r: &mut [u8],
             out_s: &mut [u8],
@@ -2014,6 +2064,7 @@ pub mod signing {
                 &self.pubkey[..1 + 2 * C::ELEM_BYTES],
                 digest,
                 added,
+                blind,
                 out_r,
                 out_s,
             )
