@@ -1453,6 +1453,79 @@ pub mod signing {
         (x, valid)
     }
 
+    /// ECDH core: validate the peer's SEC1-uncompressed point and write the
+    /// shared secret `x(d·P)` (affine X, big-endian, `C::ELEM_BYTES`) into
+    /// `out`. Returns `false` — zeroing `out` — on a malformed, out-of-range,
+    /// off-curve, or identity peer point, or an out-of-range `d`.
+    ///
+    /// The peer point is public (a cleartext `key_share`), so its validation
+    /// branches freely. Only `d` is secret: its range check folds into a
+    /// `Choice` and `d·P` runs the same taint-gated [`scalar_mul_ct`] ladder,
+    /// with no `d`-dependent branch. **The on-curve check is load-bearing** —
+    /// without it a crafted off-curve/small-order point recovers `d` (the
+    /// invalid-curve attack). Cofactor is 1 on every supported curve and SEC1
+    /// uncompressed cannot encode the identity, so on-curve + in-range is the
+    /// complete point validation (no separate subgroup check).
+    pub(crate) fn ecdh_shared_x_ct<C: Curve, T: ConstantTimeInt>(
+        d: &[u8],
+        peer_sec1: &[u8],
+        out: &mut [u8],
+    ) -> bool {
+        const {
+            assert!(
+                core::mem::size_of::<T>() >= C::ELEM_BYTES,
+                "backend type narrower than the curve's field element"
+            );
+        }
+        let eb = C::ELEM_BYTES;
+        if d.len() != eb || out.len() != eb || peer_sec1.len() != 1 + 2 * eb || peer_sec1[0] != 0x04
+        {
+            return false;
+        }
+        let p = from_be::<T>(C::P);
+        let n = from_be::<T>(C::N);
+        let d_int = from_be::<T>(d);
+        // Secret `d` range check — no early branch on `d`, folded into `ok`.
+        let ok = !d_int.ct_is_zero() & d_int.ct_lt(&n);
+
+        let Some(fp) = FieldCt::new(p) else {
+            return false;
+        };
+        // Peer coordinates (public): reject `X ≥ p` / `Y ≥ p`.
+        let qx = from_be::<T>(&peer_sec1[1..1 + eb]);
+        let qy = from_be::<T>(&peer_sec1[1 + eb..1 + 2 * eb]);
+        if !(bool::from(qx.ct_lt(&p)) && bool::from(qy.ct_lt(&p))) {
+            return false;
+        }
+        let a_res = fp.reduce(&from_be::<T>(C::A));
+        let b_res = fp.reduce(&from_be::<T>(C::B));
+        let b3 = fp.add(&fp.add(&b_res, &b_res), &b_res);
+        let qx_r = fp.reduce(&qx);
+        let qy_r = fp.reduce(&qy);
+        // On-curve (public): y² == x³ + a·x + b.
+        let y2 = fp.mul(&qy_r, &qy_r);
+        let x3 = fp.mul(&fp.mul(&qx_r, &qx_r), &qx_r);
+        let ax = fp.mul(&a_res, &qx_r);
+        let rhs = fp.add(&fp.add(&x3, &ax), &b_res);
+        if fp.into_raw(&y2) != fp.into_raw(&rhs) {
+            return false;
+        }
+
+        let peer = PointCt {
+            x: qx_r,
+            y: qy_r,
+            z: fp.one(),
+        };
+        let shared = scalar_mul_ct(&fp, &a_res, &b3, eb * 8, &d_int, &peer);
+        let (sx, sx_ok) = affine_x_ct(&fp, &shared);
+        if !bool::from(ok & sx_ok) {
+            out.iter_mut().for_each(|b| *b = 0);
+            return false;
+        }
+        to_be_ct::<T>(&sx, out);
+        true
+    }
+
     /// **Constant-time** ECDSA signing over curve `C` with the Ct backend
     /// `T`, given a caller-supplied nonce `k`. The secret scalar multiply
     /// `k·G` uses RCB complete formulas on the `Ct` modmath surface, and
@@ -1681,7 +1754,7 @@ pub mod signing {
 
     /// Widest curve scalar this crate carries (P-384 = 48 bytes); the
     /// `SigningKey` byte buffer is sized to it and sliced per curve.
-    const MAX_ELEM: usize = 48;
+    pub(crate) const MAX_ELEM: usize = 48;
 
     /// Internal ECDSA private-scalar holder that **wipes itself on drop**
     /// (`Zeroizing` for its whole lifetime). Curve-fixed (`C`); the
@@ -1923,6 +1996,128 @@ pub mod signing {
         #[must_use]
         pub fn verifying_key_sec1(&self, out: &mut [u8]) -> bool {
             self.key.verifying_key_sec1::<Tct>(out)
+        }
+    }
+}
+
+pub mod ecdh {
+    //! Ephemeral elliptic-curve Diffie–Hellman (ECDHE) — the TLS 1.3
+    //! `key_share` path over P-256 / P-384 / secp256k1.
+    //!
+    //! Shaped after RustCrypto's `elliptic_curve::ecdh`: generate an
+    //! [`EphemeralSecret`], send its
+    //! [`public_key`](EphemeralSecret::public_key) in the `key_share`, then
+    //! agree against the peer's share with
+    //! [`diffie_hellman`](EphemeralSecret::diffie_hellman). The agreed value
+    //! is the raw affine X-coordinate of `d·P` — **no KDF is applied**;
+    //! callers derive keying material from it (TLS uses HKDF).
+    //!
+    //! The secret scalar multiply `d·P` runs the same constant-time,
+    //! taint-gated ladder as signing. The peer's point is fully validated
+    //! (SEC1 decode, coordinate range, on-curve) before the multiply,
+    //! closing the invalid-curve attack.
+    use crate::signing::{ConstantTimeInt, MAX_ELEM, SigningKey, ecdh_shared_x_ct};
+    use crate::{Curve, from_be};
+    use zeroize::Zeroizing;
+
+    /// Agreed secret: the raw affine X-coordinate of `d·P`, big-endian,
+    /// `C::ELEM_BYTES` long. No KDF is applied. Zeroized on drop.
+    pub struct SharedSecret {
+        bytes: Zeroizing<[u8; MAX_ELEM]>,
+        len: usize,
+    }
+
+    impl SharedSecret {
+        /// The agreed secret bytes (`C::ELEM_BYTES` long).
+        #[must_use]
+        pub fn as_bytes(&self) -> &[u8] {
+            &self.bytes[..self.len]
+        }
+    }
+
+    /// SEC1-uncompressed public key (`0x04 || X || Y`) of an ephemeral
+    /// secret — the bytes to place in a TLS `key_share`. Public material.
+    pub struct PublicKey {
+        bytes: [u8; 1 + 2 * MAX_ELEM],
+        len: usize,
+    }
+
+    impl PublicKey {
+        /// The SEC1-uncompressed encoding (`1 + 2·C::ELEM_BYTES` bytes).
+        #[must_use]
+        pub fn as_sec1_bytes(&self) -> &[u8] {
+            &self.bytes[..self.len]
+        }
+    }
+
+    /// A one-shot ECDH secret scalar. `T` is the constant-time backend
+    /// (the secret `d·P` runs the taint-gated ladder). Drop zeroizes the
+    /// scalar.
+    pub struct EphemeralSecret<C: Curve, T: ConstantTimeInt> {
+        scalar: Zeroizing<[u8; MAX_ELEM]>,
+        _p: core::marker::PhantomData<fn() -> (C, T)>,
+    }
+
+    impl<C: Curve, T: ConstantTimeInt> EphemeralSecret<C, T> {
+        /// Draw a uniform secret scalar in `[1, n−1]` by rejection
+        /// sampling. Returns `Err` if the RNG fails or (astronomically)
+        /// never yields an in-range draw. Never panics.
+        pub fn random<R: signature::rand_core::TryCryptoRng + ?Sized>(
+            rng: &mut R,
+        ) -> Result<Self, signature::Error> {
+            const {
+                assert!(C::ELEM_BYTES <= MAX_ELEM, "ELEM_BYTES exceeds MAX_ELEM");
+                assert!(
+                    core::mem::size_of::<T>() >= C::ELEM_BYTES,
+                    "backend type narrower than the curve's field element"
+                );
+            }
+            let eb = C::ELEM_BYTES;
+            let n = from_be::<T>(C::N);
+            let mut scalar = Zeroizing::new([0u8; MAX_ELEM]);
+            // Rejection sampling: a uniform draw lands in [1, n−1] with
+            // probability ≥ 1/2 per try (n > p/2 for these curves), so 128
+            // tries is a fail-closed backstop, never a practical limit.
+            for _ in 0..128 {
+                signature::rand_core::TryRng::try_fill_bytes(rng, &mut scalar[..eb])
+                    .map_err(|_| signature::Error::new())?;
+                let d = from_be::<T>(&scalar[..eb]);
+                if bool::from(!d.ct_is_zero() & d.ct_lt(&n)) {
+                    return Ok(Self {
+                        scalar,
+                        _p: core::marker::PhantomData,
+                    });
+                }
+            }
+            Err(signature::Error::new())
+        }
+
+        /// SEC1-uncompressed public key `d·G` for the `key_share`.
+        #[must_use]
+        pub fn public_key(&self) -> Option<PublicKey> {
+            let eb = C::ELEM_BYTES;
+            let key = SigningKey::<C>::from_bytes(&self.scalar[..eb])?;
+            let mut bytes = [0u8; 1 + 2 * MAX_ELEM];
+            if !key.verifying_key_sec1::<T>(&mut bytes[..1 + 2 * eb]) {
+                return None;
+            }
+            Some(PublicKey {
+                bytes,
+                len: 1 + 2 * eb,
+            })
+        }
+
+        /// Agree on `x(d·P)` from the peer's SEC1-uncompressed `key_share`.
+        /// Returns `None` if the peer point is malformed, out of range,
+        /// off-curve, or the identity.
+        #[must_use]
+        pub fn diffie_hellman(&self, peer_sec1: &[u8]) -> Option<SharedSecret> {
+            let eb = C::ELEM_BYTES;
+            let mut bytes = Zeroizing::new([0u8; MAX_ELEM]);
+            if !ecdh_shared_x_ct::<C, T>(&self.scalar[..eb], peer_sec1, &mut bytes[..eb]) {
+                return None;
+            }
+            Some(SharedSecret { bytes, len: eb })
         }
     }
 }
