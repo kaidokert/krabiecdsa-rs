@@ -32,8 +32,10 @@ cycle/time proxies in the full matrices.
 
 The constant-time signer costs more — RCB complete formulas, `FieldCt`
 arithmetic, and the RFC 6979 HMAC-SHA256 DRBG. Its constant-time guarantee
-is timing-only (no power/EM-DPA blinding yet — see the `signing` module
-docs for the side-channel scope):
+is timing-only. The randomized signer adds projective-coordinate blinding
+against power/EM-DPA, but the deterministic path is unblinded and scalar
+blinding is still a follow-up — see the `signing` module docs for the full
+side-channel scope:
 
 | Target | Op | Curve | .text (KiB) | Stack (bytes) |
 | ------ | -- | ----- | ----------: | ------------: |

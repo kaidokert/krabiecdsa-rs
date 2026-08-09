@@ -33,6 +33,19 @@ fn coord_blinding_is_transparent() {
         assert_eq!(r, want_r, "r changed under blind (len {})", blind.len());
         assert_eq!(s, want_s, "s changed under blind (len {})", blind.len());
     }
+
+    // A nonempty blind of the wrong width must fail closed, not silently
+    // truncate to zero and sign unblinded.
+    for bad in [&[0u8; 33][..], &[0u8; 31][..], &[7u8; 64][..]] {
+        let (mut r, mut s) = ([0u8; 32], [0u8; 32]);
+        assert!(
+            !sign_prehashed_ct_with_k_inner::<crate::p256::P256, U256Ct>(
+                &d, &digest, &k, bad, &mut r, &mut s
+            ),
+            "oversized/undersized blind (len {}) must reject",
+            bad.len()
+        );
+    }
 }
 
 /// One openssl-produced known-good signature plus the curve's

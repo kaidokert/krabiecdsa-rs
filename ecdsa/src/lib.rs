@@ -1514,11 +1514,16 @@ pub mod signing {
             );
         }
         let eb = C::ELEM_BYTES;
+        // A nonempty `blind` must be exactly one field element wide: a wider
+        // slice would silently truncate to zero in `from_be` and collapse to
+        // the unblinded path, disabling the DPA protection the caller asked
+        // for. Fail closed instead. (Empty = deliberately unblinded.)
         if private_key.len() != eb
             || k.len() != eb
             || out_r.len() != eb
             || out_s.len() != eb
             || digest.is_empty()
+            || (!blind.is_empty() && blind.len() != eb)
         {
             return false;
         }
