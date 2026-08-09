@@ -24,7 +24,12 @@ fn coord_blinding_is_transparent() {
     let want_s = hx::<32>("f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8");
 
     let full = hx::<32>("0123456789abcdeffedcba9876543210112233445566778899aabbccddeeff00");
-    let blinds: [&[u8]; 5] = [&[], &[0u8; 32], &[1u8; 32], &[0xffu8; 32], &full];
+    // `one` is the field value 1 (big-endian), exercising a nonempty blind
+    // whose λ reduces to the unblinded scale; `[1u8; 32]` (0x0101…01) is a
+    // separate arbitrary nonzero case.
+    let mut one = [0u8; 32];
+    one[31] = 1;
+    let blinds: [&[u8]; 6] = [&[], &[0u8; 32], &one, &[1u8; 32], &[0xffu8; 32], &full];
     for blind in blinds {
         let (mut r, mut s) = ([0u8; 32], [0u8; 32]);
         assert!(sign_prehashed_ct_with_k_inner::<crate::p256::P256, U256Ct>(
