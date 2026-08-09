@@ -98,6 +98,14 @@ pub const DIGEST384: [u8; 48] = hx("9a9083505bc92276aec4be312696ef7bf3bf603f4bbd
 /// the taint harness never marks it undefined.
 pub const ADDED: [u8; 32] = hx("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
 
+/// P-256 peer public key (SEC1 uncompressed) for the ECDH fixture —
+/// public `key_share` material, openssl-derived, never tainted.
+#[cfg(feature = "ecdh")]
+pub const PEER256: [u8; 65] = hx("04c00cebaf052b8d8720f20639a891a6093727d460631d1e1ba909e0c4b41687b508abf40702be0e8fb6c6139737fcfee5d67a00d291dc7588faf3aa92307b27b7");
+/// P-384 peer public key (SEC1 uncompressed) for the ECDH fixture.
+#[cfg(feature = "ecdh")]
+pub const PEER384: [u8; 97] = hx("04d3f47bc49bb2cf79fd577c1c441f6f6fbcf5d341c7b7f76c1350a13c67e600d6cf32027e3f829179022823dbd7d65f086ea10729bb01453455287d3f816f4d70e705e871bd6a14e2710b40bbd2267d0ef08afc6a8114e4ed982cd4df41b6dda7");
+
 // --- positive fixtures ------------------------------------------------
 //
 // The gates verify *fixture instantiations, not generic code*, so each
@@ -150,6 +158,51 @@ ct_sign_fixture!(ct_fix__ecdsa_sign_withk_p256__fb8, P256, FixedUInt<u8, 32, Ct>
 ct_sign_fixture!(ct_fix__ecdsa_sign_withk_p256__fb64, P256, FixedUInt<u64, 4, Ct>, 32);
 // P-384, `u32` limbs — the deployment shape at the wider field.
 ct_sign_fixture!(ct_fix__ecdsa_sign_withk_p384__fb32, P384, FixedUInt<u32, 12, Ct>, 48);
+
+// --- ECDH shared-secret (variable-base d·P) ---------------------------
+//
+// Drives `ecdh_diffie_hellman_ct`: the secret scalar `d` times the
+// *public* peer point, through the same taint-gated `scalar_mul_ct`
+// ladder as signing. Taints `d` only — the peer `key_share` is public
+// (validated with data-dependent branches on public bytes, which is
+// correct), and the shared X is secret-derived but read out only after
+// `black_box`.
+
+#[cfg(feature = "ecdh")]
+macro_rules! ct_ecdh_fixture {
+    ($name:ident, $curve:ty, $carrier:ty, $bytes:literal, $pkbytes:literal) => {
+        /// Whole ECDH agreement driven by the secret `d` against a public
+        /// peer point.
+        ///
+        /// # Safety
+        /// `d_ptr`/`out_ptr` are valid, aligned `$bytes`-byte arrays;
+        /// `peer_ptr` a valid, aligned `$pkbytes`-byte array.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(
+            d_ptr: *const [u8; $bytes],
+            peer_ptr: *const [u8; $pkbytes],
+            out_ptr: *mut [u8; $bytes],
+        ) {
+            let d = black_box(unsafe { *d_ptr });
+            let peer = unsafe { *peer_ptr };
+            let mut out = [0u8; $bytes];
+            let ok = krabiecdsa::signing::ecdh_diffie_hellman_ct::<$curve, $carrier>(
+                black_box(&d[..]),
+                &peer[..],
+                &mut out,
+            );
+            unsafe {
+                *out_ptr = black_box(out);
+            }
+            let _ = black_box(ok);
+        }
+    };
+}
+
+#[cfg(feature = "ecdh")]
+ct_ecdh_fixture!(ct_fix__ecdh_p256__fb32, P256, FixedUInt<u32, 8, Ct>, 32, 65);
+#[cfg(feature = "ecdh")]
+ct_ecdh_fixture!(ct_fix__ecdh_p384__fb32, P384, FixedUInt<u32, 12, Ct>, 48, 97);
 
 // --- full RFC 6979 deterministic sign ---------------------------------
 //

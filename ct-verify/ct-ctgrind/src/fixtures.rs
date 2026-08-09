@@ -77,6 +77,46 @@ taint_sign_fixture!(
     ct_fixtures::DIGEST384
 );
 
+// ECDH agreement — taints the secret scalar `d` only; the peer point is
+// public (a cleartext `key_share`), so it is not tainted. A secret-
+// dependent branch in the `d·P` ladder or the `d` range check trips
+// memcheck; the legitimate branches validating the public peer point pass.
+macro_rules! taint_ecdh_fixture {
+    ($name:ident, $bytes:literal, $pkbytes:literal, $d:expr, $peer:expr) => {
+        unsafe extern "C" {
+            fn $name(
+                d_ptr: *const [u8; $bytes],
+                peer_ptr: *const [u8; $pkbytes],
+                out_ptr: *mut [u8; $bytes],
+            );
+        }
+        ctgrind_fixture!($name, {
+            let d = $d;
+            let peer = $peer;
+            let mut out = [0u8; $bytes];
+            taint_val(&d);
+            unsafe { $name(&d, &peer, &mut out) }
+            untaint_val(&out);
+            let _ = black_box(out);
+        });
+    };
+}
+
+taint_ecdh_fixture!(
+    ct_fix__ecdh_p256__fb32,
+    32,
+    65,
+    ct_fixtures::D256,
+    ct_fixtures::PEER256
+);
+taint_ecdh_fixture!(
+    ct_fix__ecdh_p384__fb32,
+    48,
+    97,
+    ct_fixtures::D384,
+    ct_fixtures::PEER384
+);
+
 // Full RFC 6979 deterministic sign — taints `d` only; the nonce is
 // derived internally by the constant-time RFC 6979 DRBG. This taints the
 // secret key through the *whole* deterministic sign, not just the scalar
