@@ -1551,6 +1551,23 @@ pub mod signing {
         sign_prehashed_ct_with_k_inner::<C, T>(private_key, digest, k, out_r, out_s)
     }
 
+    /// ECDH shared-secret core with a caller-supplied secret scalar `d` —
+    /// validates the peer's SEC1 point and writes the affine X of `d·P`.
+    ///
+    /// **`test-vectors` only, hazmat.** Production agrees via the `ecdh`
+    /// module (`ecdh::EphemeralSecret`, which draws `d` from an RNG); this
+    /// raw-`d` entry point exists to reproduce known-answer vectors and to
+    /// pin the CT surface for the ct-verify taint fixtures.
+    #[cfg(feature = "test-vectors")]
+    #[must_use]
+    pub fn ecdh_diffie_hellman_ct<C: Curve, T: ConstantTimeInt>(
+        private_key: &[u8],
+        peer_sec1: &[u8],
+        out: &mut [u8],
+    ) -> bool {
+        ecdh_shared_x_ct::<C, T>(private_key, peer_sec1, out)
+    }
+
     /// Core RCB signature math given the nonce `k` — always compiled; the
     /// implementation behind the deterministic/hedged sign and the
     /// `test-vectors` sign-with-`k` entrypoint.

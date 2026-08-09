@@ -24,6 +24,12 @@ panic-handler = []
 # harness enables it, the asm-ladder driver (which only needs the scalar
 # ladder) does not.
 deterministic = ["dep:hmac", "dep:sha2"]
+# ECDH shared-secret fixtures (taint `d` through `d·P`). Reuse the same
+# `scalar_mul_ct` monomorphizations as the sign fixtures, so they add
+# nothing to the asm-ladder gate (which the driver keys off distinct
+# symbols) — off by default so the driver's ladder count is unchanged;
+# the taint harness enables it for the extra ECDH-path coverage.
+ecdh = []
 
 [dependencies]
 krabiecdsa = { path = "../../ecdsa", default-features = false, features = ["test-vectors"] }
