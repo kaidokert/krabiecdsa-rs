@@ -1608,6 +1608,36 @@ pub mod signing {
         bool::from(valid)
     }
 
+    /// Validate a peer's SEC1-uncompressed point — length, `0x04` prefix,
+    /// coordinate range (`X,Y < p`), on-curve (`y² = x³ + ax + b`). Public
+    /// input only (no secret); the KEM `EncapsulationKey` constructor uses it
+    /// to reject bad `key_share`s up front. Same checks as the front of
+    /// [`ecdh_shared_x_ct`].
+    pub(crate) fn validate_peer_sec1<C: Curve, T: ConstantTimeInt>(sec1: &[u8]) -> bool {
+        let eb = C::ELEM_BYTES;
+        if sec1.len() != 1 + 2 * eb || sec1[0] != 0x04 {
+            return false;
+        }
+        let p = from_be::<T>(C::P);
+        let Some(fp) = FieldCt::new(p) else {
+            return false;
+        };
+        let qx = from_be::<T>(&sec1[1..1 + eb]);
+        let qy = from_be::<T>(&sec1[1 + eb..1 + 2 * eb]);
+        if !(bool::from(qx.ct_lt(&p)) && bool::from(qy.ct_lt(&p))) {
+            return false;
+        }
+        let a_res = fp.reduce(&from_be::<T>(C::A));
+        let b_res = fp.reduce(&from_be::<T>(C::B));
+        let qx_r = fp.reduce(&qx);
+        let qy_r = fp.reduce(&qy);
+        let y2 = fp.mul(&qy_r, &qy_r);
+        let x3 = fp.mul(&fp.mul(&qx_r, &qx_r), &qx_r);
+        let ax = fp.mul(&a_res, &qx_r);
+        let rhs = fp.add(&fp.add(&x3, &ax), &b_res);
+        fp.into_raw(&y2) == fp.into_raw(&rhs)
+    }
+
     /// **Constant-time** ECDSA signing over curve `C` with the Ct backend
     /// `T`, given a caller-supplied nonce `k`. The secret scalar multiply
     /// `k·G` uses RCB complete formulas on the `Ct` modmath surface, and
@@ -2207,124 +2237,254 @@ pub mod signing {
 }
 
 pub mod ecdh {
-    //! Ephemeral elliptic-curve Diffie–Hellman (ECDHE) — the TLS 1.3
+    //! Elliptic-curve Diffie–Hellman as a RustCrypto [`kem`] KEM — the TLS 1.3
     //! `key_share` path over P-256 / P-384 / secp256k1.
     //!
-    //! Shaped after RustCrypto's `elliptic_curve::ecdh`: generate an
-    //! [`EphemeralSecret`], send its
-    //! [`public_key`](EphemeralSecret::public_key) in the `key_share`, then
-    //! agree against the peer's share with
-    //! [`diffie_hellman`](EphemeralSecret::diffie_hellman). The agreed value
-    //! is the raw affine X-coordinate of `d·P` — **no KDF is applied**;
-    //! callers derive keying material from it (TLS uses HKDF).
+    //! P-256 ECDHE is exposed through the same [`kem`] traits ML-KEM uses, so a
+    //! hybrid key exchange drives both uniformly. A [`DecapsulationKey`] is an
+    //! ephemeral secret scalar whose [`EncapsulationKey`] is `d·G` (the SEC1
+    //! `key_share`). [`Encapsulate::encapsulate_with_rng`] against a peer's key
+    //! yields `(ciphertext = e·G, shared = x(e·peer))`;
+    //! [`TryDecapsulate::try_decapsulate`] recovers `x(d·ct)`. The agreed value
+    //! is the raw affine X — no KDF is applied (TLS derives keys with HKDF).
     //!
-    //! The secret scalar multiply `d·P` runs the same constant-time,
-    //! taint-gated ladder as signing. The peer's point is fully validated
-    //! (SEC1 decode, coordinate range, on-curve) before the multiply,
-    //! closing the invalid-curve attack.
-    use crate::signing::{ConstantTimeInt, MAX_ELEM, SigningKey, ecdh_shared_x_ct};
-    use crate::{Curve, from_be};
+    //! The secret scalar multiply runs the same constant-time, taint-gated
+    //! ladder as signing, and peer points are fully validated (SEC1 decode,
+    //! coordinate range, on-curve) before use. Unblinded — coordinate/scalar
+    //! blinding is a follow-up.
+    use crate::signing::{
+        ConstantTimeInt, MAX_ELEM, SigningKey, ecdh_shared_x_ct, validate_peer_sec1,
+    };
+    use crate::{Curve, from_be, k256, p256, p384};
+    use core::marker::PhantomData;
+    use kem::common::array::typenum::Unsigned;
+    use kem::common::array::{Array, ArraySize};
+    use kem::consts::{U32, U48, U65, U97};
+    use kem::{
+        Ciphertext, Decapsulator, Encapsulate, Generate, InvalidKey, Kem, Key, KeyExport,
+        KeySizeUser, SharedKey, TryDecapsulate, TryKeyInit,
+    };
     use zeroize::Zeroizing;
 
-    /// Agreed secret: the raw affine X-coordinate of `d·P`, big-endian,
-    /// `C::ELEM_BYTES` long. No KDF is applied. Zeroized on drop.
-    pub struct SharedSecret {
-        bytes: Zeroizing<[u8; MAX_ELEM]>,
-        len: usize,
+    /// Per-curve KEM array sizes, bridging the runtime `ELEM_BYTES` to the
+    /// `hybrid-array` sizes the [`kem`] traits require: `SharedSize` is the
+    /// affine-X width (`= ELEM_BYTES`), `Sec1Size` the SEC1-uncompressed
+    /// encoding (`1 + 2·ELEM_BYTES`), used for both the public key and the
+    /// ciphertext.
+    pub trait EcdhCurve: Curve {
+        /// Shared-secret / affine-X size (`ELEM_BYTES`).
+        type SharedSize: ArraySize;
+        /// SEC1-uncompressed public-key / ciphertext size (`1 + 2·ELEM_BYTES`).
+        type Sec1Size: ArraySize;
+    }
+    impl EcdhCurve for p256::P256 {
+        type SharedSize = U32;
+        type Sec1Size = U65;
+    }
+    impl EcdhCurve for k256::K256 {
+        type SharedSize = U32;
+        type Sec1Size = U65;
+    }
+    impl EcdhCurve for p384::P384 {
+        type SharedSize = U48;
+        type Sec1Size = U97;
     }
 
-    impl SharedSecret {
-        /// The agreed secret bytes (`C::ELEM_BYTES` long).
-        #[must_use]
-        pub fn as_bytes(&self) -> &[u8] {
-            &self.bytes[..self.len]
+    /// KEM marker for ECDH over curve `C` with constant-time backend `T`.
+    pub struct EcdhKem<C, T>(PhantomData<fn() -> (C, T)>);
+    // A ZST: every impl is bound-free (it never touches `C`/`T`), so `EcdhKem`
+    // satisfies `Kem`'s `Copy + … + Ord` supertraits without constraining the
+    // markers.
+    impl<C, T> Clone for EcdhKem<C, T> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+    impl<C, T> Copy for EcdhKem<C, T> {}
+    impl<C, T> core::fmt::Debug for EcdhKem<C, T> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("EcdhKem")
+        }
+    }
+    impl<C, T> Default for EcdhKem<C, T> {
+        fn default() -> Self {
+            Self(PhantomData)
+        }
+    }
+    impl<C, T> PartialEq for EcdhKem<C, T> {
+        fn eq(&self, _: &Self) -> bool {
+            true
+        }
+    }
+    impl<C, T> Eq for EcdhKem<C, T> {}
+    impl<C, T> PartialOrd for EcdhKem<C, T> {
+        fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl<C, T> Ord for EcdhKem<C, T> {
+        fn cmp(&self, _: &Self) -> core::cmp::Ordering {
+            core::cmp::Ordering::Equal
         }
     }
 
-    /// SEC1-uncompressed public key (`0x04 || X || Y`) of an ephemeral
-    /// secret — the bytes to place in a TLS `key_share`. Public material.
-    pub struct PublicKey {
-        bytes: [u8; 1 + 2 * MAX_ELEM],
-        len: usize,
+    impl<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static> Kem for EcdhKem<C, T> {
+        type DecapsulationKey = DecapsulationKey<C, T>;
+        type EncapsulationKey = EncapsulationKey<C, T>;
+        type SharedKeySize = C::SharedSize;
+        type CiphertextSize = C::Sec1Size;
     }
 
-    impl PublicKey {
-        /// The SEC1-uncompressed encoding (`1 + 2·C::ELEM_BYTES` bytes).
-        #[must_use]
-        pub fn as_sec1_bytes(&self) -> &[u8] {
-            &self.bytes[..self.len]
+    /// KEM encapsulation key: a peer's SEC1-uncompressed point (`0x04 || X ||
+    /// Y`), also the TLS `key_share` bytes. Validated on construction.
+    pub struct EncapsulationKey<C: EcdhCurve, T> {
+        point: Array<u8, C::Sec1Size>,
+        _p: PhantomData<fn() -> T>,
+    }
+    impl<C: EcdhCurve, T> Clone for EncapsulationKey<C, T> {
+        fn clone(&self) -> Self {
+            Self {
+                point: self.point.clone(),
+                _p: PhantomData,
+            }
         }
     }
-
-    /// A one-shot ECDH secret scalar. `T` is the constant-time backend
-    /// (the secret `d·P` runs the taint-gated ladder). Drop zeroizes the
-    /// scalar.
-    pub struct EphemeralSecret<C: Curve, T: ConstantTimeInt> {
-        scalar: Zeroizing<[u8; MAX_ELEM]>,
-        _p: core::marker::PhantomData<fn() -> (C, T)>,
+    impl<C: EcdhCurve, T> core::fmt::Debug for EncapsulationKey<C, T> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("EncapsulationKey").finish_non_exhaustive()
+        }
     }
+    impl<C: EcdhCurve, T> PartialEq for EncapsulationKey<C, T> {
+        fn eq(&self, other: &Self) -> bool {
+            self.point == other.point
+        }
+    }
+    impl<C: EcdhCurve, T> Eq for EncapsulationKey<C, T> {}
 
-    impl<C: Curve, T: ConstantTimeInt> EphemeralSecret<C, T> {
-        /// Draw a uniform secret scalar in `[1, n−1]` by rejection
-        /// sampling. Returns `Err` if the RNG fails or (astronomically)
-        /// never yields an in-range draw. Never panics.
-        pub fn random<R: signature::rand_core::TryCryptoRng + ?Sized>(
+    impl<C: EcdhCurve, T: ConstantTimeInt> KeySizeUser for EncapsulationKey<C, T> {
+        type KeySize = C::Sec1Size;
+    }
+    impl<C: EcdhCurve, T: ConstantTimeInt> KeyExport for EncapsulationKey<C, T> {
+        fn to_bytes(&self) -> Key<Self> {
+            self.point.clone()
+        }
+    }
+    impl<C: EcdhCurve, T: ConstantTimeInt> TryKeyInit for EncapsulationKey<C, T> {
+        fn new(key: &Key<Self>) -> Result<Self, InvalidKey> {
+            if validate_peer_sec1::<C, T>(key.as_slice()) {
+                Ok(Self {
+                    point: key.clone(),
+                    _p: PhantomData,
+                })
+            } else {
+                Err(InvalidKey)
+            }
+        }
+    }
+    impl<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static> Encapsulate for EncapsulationKey<C, T> {
+        type Kem = EcdhKem<C, T>;
+        fn encapsulate_with_rng<R>(
+            &self,
             rng: &mut R,
-        ) -> Result<Self, signature::Error> {
+        ) -> (Ciphertext<Self::Kem>, SharedKey<Self::Kem>)
+        where
+            R: signature::rand_core::CryptoRng + ?Sized,
+        {
+            // Fresh ephemeral e; ciphertext = e·G, shared = x(e·peer).
+            let eph = DecapsulationKey::<C, T>::generate_from_rng(rng);
+            let ct = eph.ek.point.clone();
+            let mut shared = SharedKey::<Self::Kem>::default();
+            // `self` was validated at construction and `eph.scalar ∈ [1,n-1]`,
+            // so the agreement succeeds; on the impossible failure `shared`
+            // stays zero.
+            let _ = ecdh_shared_x_ct::<C, T>(
+                &eph.scalar[..C::ELEM_BYTES],
+                self.point.as_slice(),
+                shared.as_mut_slice(),
+            );
+            (ct, shared)
+        }
+    }
+
+    /// KEM decapsulation key: an ephemeral ECDH secret scalar. Its
+    /// [`EncapsulationKey`] is `d·G`. The scalar is zeroized on drop.
+    pub struct DecapsulationKey<C: EcdhCurve, T> {
+        scalar: Zeroizing<[u8; MAX_ELEM]>,
+        ek: EncapsulationKey<C, T>,
+    }
+
+    impl<C: EcdhCurve, T: ConstantTimeInt> Generate for DecapsulationKey<C, T> {
+        fn try_generate_from_rng<R: signature::rand_core::TryCryptoRng + ?Sized>(
+            rng: &mut R,
+        ) -> Result<Self, R::Error> {
             const {
                 assert!(C::ELEM_BYTES <= MAX_ELEM, "ELEM_BYTES exceeds MAX_ELEM");
                 assert!(
                     core::mem::size_of::<T>() >= C::ELEM_BYTES,
                     "backend type narrower than the curve's field element"
                 );
+                assert!(
+                    <C::SharedSize as Unsigned>::USIZE == C::ELEM_BYTES,
+                    "SharedSize must equal ELEM_BYTES"
+                );
+                assert!(
+                    <C::Sec1Size as Unsigned>::USIZE == 1 + 2 * C::ELEM_BYTES,
+                    "Sec1Size must equal 1 + 2·ELEM_BYTES"
+                );
             }
-            // A uniform draw lands in [1, n−1] with probability ≥ 1/2 per try
-            // (n > p/2 for these curves), so this bound is a fail-closed
-            // backstop against a stuck RNG, never a practical limit.
-            const REJECTION_TRIES: usize = 128;
             let eb = C::ELEM_BYTES;
             let n = from_be::<T>(C::N);
             let mut scalar = Zeroizing::new([0u8; MAX_ELEM]);
-            for _ in 0..REJECTION_TRIES {
-                signature::rand_core::TryRng::try_fill_bytes(rng, &mut scalar[..eb])
-                    .map_err(|_| signature::Error::new())?;
+            // Rejection sampling for a uniform scalar in [1, n-1]. Each draw is
+            // in range with probability ≥ 1/2 (n > p/2), so the loop only ever
+            // exits on success; the RNG is the sole error path.
+            loop {
+                signature::rand_core::TryRng::try_fill_bytes(rng, &mut scalar[..eb])?;
                 let d = from_be::<T>(&scalar[..eb]);
                 if bool::from(!d.ct_is_zero() & d.ct_lt(&n)) {
-                    return Ok(Self {
-                        scalar,
-                        _p: core::marker::PhantomData,
-                    });
+                    break;
                 }
             }
-            Err(signature::Error::new())
-        }
-
-        /// SEC1-uncompressed public key `d·G` for the `key_share`.
-        #[must_use]
-        pub fn public_key(&self) -> Option<PublicKey> {
-            let eb = C::ELEM_BYTES;
-            let key = SigningKey::<C>::from_bytes(&self.scalar[..eb])?;
-            let mut bytes = [0u8; 1 + 2 * MAX_ELEM];
-            if !key.verifying_key_sec1::<T>(&mut bytes[..1 + 2 * eb]) {
-                return None;
-            }
-            Some(PublicKey {
-                bytes,
-                len: 1 + 2 * eb,
+            let mut point = Array::<u8, C::Sec1Size>::default();
+            // `d ∈ [1,n-1]` and the output is exactly SEC1-sized, so this
+            // succeeds; `.map(..).unwrap_or(false)` keeps it panic-free.
+            let _ = SigningKey::<C>::from_bytes(&scalar[..eb])
+                .map(|k| k.verifying_key_sec1::<T>(point.as_mut_slice()))
+                .unwrap_or(false);
+            Ok(Self {
+                scalar,
+                ek: EncapsulationKey {
+                    point,
+                    _p: PhantomData,
+                },
             })
         }
+    }
 
-        /// Agree on `x(d·P)` from the peer's SEC1-uncompressed `key_share`,
-        /// consuming the one-shot secret. Returns `None` if the peer point is
-        /// malformed, out of range, off-curve, or the identity.
-        #[must_use]
-        pub fn diffie_hellman(self, peer_sec1: &[u8]) -> Option<SharedSecret> {
-            let eb = C::ELEM_BYTES;
-            let mut bytes = Zeroizing::new([0u8; MAX_ELEM]);
-            if !ecdh_shared_x_ct::<C, T>(&self.scalar[..eb], peer_sec1, &mut bytes[..eb]) {
-                return None;
+    impl<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static> Decapsulator for DecapsulationKey<C, T> {
+        type Kem = EcdhKem<C, T>;
+        fn encapsulation_key(&self) -> &EncapsulationKey<C, T> {
+            &self.ek
+        }
+    }
+    impl<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static> TryDecapsulate
+        for DecapsulationKey<C, T>
+    {
+        type Error = InvalidKey;
+        fn try_decapsulate(
+            &self,
+            ct: &Ciphertext<Self::Kem>,
+        ) -> Result<SharedKey<Self::Kem>, InvalidKey> {
+            let mut shared = SharedKey::<Self::Kem>::default();
+            if ecdh_shared_x_ct::<C, T>(
+                &self.scalar[..C::ELEM_BYTES],
+                ct.as_slice(),
+                shared.as_mut_slice(),
+            ) {
+                Ok(shared)
+            } else {
+                Err(InvalidKey)
             }
-            Some(SharedSecret { bytes, len: eb })
         }
     }
 }
