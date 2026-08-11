@@ -21,6 +21,10 @@ fix-nonce = []
 fix-fixedsign = []
 fix-wholesign = []
 fix-keygen = []
+# Probes to localize the mod-n scalar-arithmetic timing signal seen in the
+# sign fixtures: an amplified Montgomery-multiply chain and the Fermat k⁻¹.
+fix-montmul = []
+fix-kinv = []
 # Clock tier (see main.rs). clock-30mhz is the 0-wait-state deterministic
 # CT-verdict regime; clock-168mhz trades fetch jitter for ~5.6x throughput on
 # the slow carriers. Exactly one is set via the profile's build-features.

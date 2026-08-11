@@ -74,7 +74,7 @@ expected-suite = "krabiecdsa-p256-sign"
 [campaigns.krabiecdsa-ct-jtrace-f407-30mhz]
 profile = "jtrace-f407-30mhz-0ws"
 case-set = "krabiecdsa-ct-30mhz"
-matrix = { fixture = ["nonce", "fixedsign", "wholesign", "keygen"] }
+matrix = { fixture = ["nonce", "fixedsign", "wholesign", "keygen", "montmul", "kinv"] }
 matrix-features = ["fix-{fixture}"]
 # gate = true: the baseline bench run confirmed all four u32x8 positives hold
 # (BelowThreshold across keys) and negative_early_exit separates

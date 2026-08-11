@@ -16,6 +16,10 @@ use krabiecdsa::p256::{self, P256};
 use krabiecdsa::signing::PrehashSigningKey;
 #[cfg(feature = "fix-nonce")]
 use krabiecdsa::signing::derive_nonce_rfc6979_ct;
+#[cfg(feature = "fix-kinv")]
+use krabiecdsa::signing::probe_field_inv_ct;
+#[cfg(feature = "fix-montmul")]
+use krabiecdsa::signing::probe_field_mul_ct;
 #[cfg(feature = "fix-fixedsign")]
 use krabiecdsa::signing::sign_prehashed_ct_with_k;
 use sha2::Sha256;
@@ -43,9 +47,16 @@ const _: () = assert!(
         + cfg!(feature = "fix-fixedsign") as usize
         + cfg!(feature = "fix-wholesign") as usize
         + cfg!(feature = "fix-keygen") as usize
+        + cfg!(feature = "fix-montmul") as usize
+        + cfg!(feature = "fix-kinv") as usize
         == 1,
     "enable exactly one fixture feature",
 );
+
+// Amplification for the single-op probes: hammer the mod-n multiply so a
+// per-op operand-value cycle difference accumulates into a measurable spread.
+#[cfg(feature = "fix-montmul")]
+const PROBE_ITERS: usize = 8192;
 
 // The three carriers the ctgrind matrix also covers: the native ARM word, the
 // AVR-class byte limb, and the double-word path (emulated on the 32-bit M4).
@@ -160,6 +171,22 @@ fn keygen_once(key: &P256SigningKey) -> bool {
     ok
 }
 
+#[cfg(feature = "fix-montmul")]
+fn montmul_once(key: &[u8; 32]) -> bool {
+    let mut out = [0u8; 32];
+    let ok = probe_field_mul_ct::<P256, CtBackend>(black_box(key), PROBE_ITERS, &mut out);
+    let _ = black_box(out);
+    ok
+}
+
+#[cfg(feature = "fix-kinv")]
+fn kinv_once(key: &[u8; 32]) -> bool {
+    let mut out = [0u8; 32];
+    let ok = probe_field_inv_ct::<P256, CtBackend>(black_box(key), &mut out);
+    let _ = black_box(out);
+    ok
+}
+
 #[inline(never)]
 fn negative_early_exit(key: &[u8; 32]) -> bool {
     let mut leading_zeroes = 0usize;
@@ -173,7 +200,12 @@ fn negative_early_exit(key: &[u8; 32]) -> bool {
     true
 }
 
-#[cfg(any(feature = "fix-nonce", feature = "fix-fixedsign"))]
+#[cfg(any(
+    feature = "fix-nonce",
+    feature = "fix-fixedsign",
+    feature = "fix-montmul",
+    feature = "fix-kinv"
+))]
 fn copy_key(input: &[u8; 32]) -> [u8; 32] {
     let mut key = [0; 32];
     key.copy_from_slice(input);
@@ -305,6 +337,14 @@ fn main() -> ! {
             prepare_signing_key,
             keygen_once,
         )
+        .unwrap();
+    #[cfg(feature = "fix-montmul")]
+    suite
+        .positive_prepared("scalar_montmul", &KEY_A, &KEY_B, copy_key, montmul_once)
+        .unwrap();
+    #[cfg(feature = "fix-kinv")]
+    suite
+        .positive_prepared("scalar_inv", &KEY_A, &KEY_B, copy_key, kinv_once)
         .unwrap();
 
     const ZERO: [u8; 32] = [0; 32];

@@ -1633,6 +1633,53 @@ pub mod signing {
         sign_prehashed_ct_with_k_inner::<C, T>(private_key, digest, k, &[], &[], out_r, out_s)
     }
 
+    /// Probe (`test-vectors`, hazmat): `iters` constant-time Montgomery
+    /// multiplications mod `n` from a key-derived base — isolates the scalar-
+    /// field multiply's operand-value timing for the hardware CT campaign.
+    /// Not a signing operation; exists only to localize a measured timing
+    /// signal.
+    #[cfg(feature = "test-vectors")]
+    #[must_use]
+    pub fn probe_field_mul_ct<C: Curve, T: ConstantTimeInt>(
+        a: &[u8],
+        iters: usize,
+        out: &mut [u8],
+    ) -> bool {
+        let eb = C::ELEM_BYTES;
+        if a.len() != eb || out.len() != eb {
+            return false;
+        }
+        let Some(fn_) = FieldCt::new(from_be::<T>(C::N)) else {
+            return false;
+        };
+        let base = fn_.reduce(&from_be::<T>(a));
+        let mut acc = fn_.one();
+        for _ in 0..iters {
+            acc = fn_.mul(&acc, &base);
+        }
+        to_be_ct::<T>(&fn_.into_raw(&acc), out);
+        true
+    }
+
+    /// Probe (`test-vectors`, hazmat): the Fermat inverse `a^(n-2) mod n` — the
+    /// exact operation the sign uses for `k⁻¹` — isolating the exponentiation's
+    /// operand-value timing.
+    #[cfg(feature = "test-vectors")]
+    #[must_use]
+    pub fn probe_field_inv_ct<C: Curve, T: ConstantTimeInt>(a: &[u8], out: &mut [u8]) -> bool {
+        let eb = C::ELEM_BYTES;
+        if a.len() != eb || out.len() != eb {
+            return false;
+        }
+        let Some(fn_) = FieldCt::new(from_be::<T>(C::N)) else {
+            return false;
+        };
+        let base = fn_.reduce(&from_be::<T>(a));
+        let inv = fn_.exp(&base, &fermat_exp(fn_.modulus()));
+        to_be_ct::<T>(&fn_.into_raw(&inv), out);
+        true
+    }
+
     /// As [`sign_prehashed_ct_with_k`], but with explicit coordinate (`blind`)
     /// and scalar (`scalar_blind`) blinding — the fully-blinded sign path with
     /// a caller-supplied nonce, exposed for the ct-verify blinded fixtures.
