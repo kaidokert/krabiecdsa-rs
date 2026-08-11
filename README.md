@@ -43,3 +43,5 @@ unblinded, and hardware TVLA validation is the remaining follow-up — see the
 
 (`footprint/cortex-m`, `cargo run --example ecdsa_sign`; includes the
 SHA-256/HMAC the deterministic nonce needs.)
+
+<!-- ci: hw-ct flake probe (no code change) -->
