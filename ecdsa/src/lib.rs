@@ -2252,6 +2252,12 @@ pub mod ecdh {
     //! ladder as signing, and peer points are fully validated (SEC1 decode,
     //! coordinate range, on-curve) before use. Unblinded — coordinate/scalar
     //! blinding is a follow-up.
+    //!
+    //! The `kem` [`SharedKey`] is a plain `hybrid-array` buffer
+    //! (the trait's return type — not wrappable in `Zeroizing` without leaving
+    //! the standard interface), so **the caller must zeroize it** after
+    //! deriving keying material, as with any `kem` implementation. The secret
+    //! scalar inside a [`DecapsulationKey`] is zeroized on drop.
     use crate::signing::{
         ConstantTimeInt, MAX_ELEM, SigningKey, ecdh_shared_x_ct, validate_peer_sec1,
     };
@@ -2394,14 +2400,16 @@ pub mod ecdh {
             let eph = DecapsulationKey::<C, T>::generate_from_rng(rng);
             let ct = eph.ek.point.clone();
             let mut shared = SharedKey::<Self::Kem>::default();
-            // `self` was validated at construction and `eph.scalar ∈ [1,n-1]`,
-            // so the agreement succeeds; on the impossible failure `shared`
-            // stays zero.
-            let _ = ecdh_shared_x_ct::<C, T>(
+            let ok = ecdh_shared_x_ct::<C, T>(
                 &eph.scalar[..C::ELEM_BYTES],
                 self.point.as_slice(),
                 shared.as_mut_slice(),
             );
+            // `self` was validated at `TryKeyInit` and `eph` carries a valid
+            // `d·G`, so the agreement cannot fail — a zeroed `shared` is never
+            // returned as valid. Asserted in debug (compiled out in release, so
+            // the path stays panic-free); `Encapsulate` has no error channel.
+            debug_assert!(ok, "encapsulation against a validated key must succeed");
             (ct, shared)
         }
     }
@@ -2435,22 +2443,25 @@ pub mod ecdh {
             let eb = C::ELEM_BYTES;
             let n = from_be::<T>(C::N);
             let mut scalar = Zeroizing::new([0u8; MAX_ELEM]);
-            // Rejection sampling for a uniform scalar in [1, n-1]. Each draw is
-            // in range with probability ≥ 1/2 (n > p/2), so the loop only ever
-            // exits on success; the RNG is the sole error path.
+            let mut point = Array::<u8, C::Sec1Size>::default();
+            // Rejection sampling: accept only a scalar in [1, n-1] whose public
+            // key `d·G` also derives, so the `EncapsulationKey` is never left
+            // all-zero (a failed derivation drops the draw rather than yielding
+            // an invalid key). A draw qualifies with probability ≥ 1/2, so the
+            // loop exits on the first valid one; the RNG is the sole error path.
             loop {
                 signature::rand_core::TryRng::try_fill_bytes(rng, &mut scalar[..eb])?;
                 let d = from_be::<T>(&scalar[..eb]);
-                if bool::from(!d.ct_is_zero() & d.ct_lt(&n)) {
+                if !bool::from(!d.ct_is_zero() & d.ct_lt(&n)) {
+                    continue;
+                }
+                let derived = SigningKey::<C>::from_bytes(&scalar[..eb])
+                    .map(|k| k.verifying_key_sec1::<T>(point.as_mut_slice()))
+                    .unwrap_or(false);
+                if derived {
                     break;
                 }
             }
-            let mut point = Array::<u8, C::Sec1Size>::default();
-            // `d ∈ [1,n-1]` and the output is exactly SEC1-sized, so this
-            // succeeds; `.map(..).unwrap_or(false)` keeps it panic-free.
-            let _ = SigningKey::<C>::from_bytes(&scalar[..eb])
-                .map(|k| k.verifying_key_sec1::<T>(point.as_mut_slice()))
-                .unwrap_or(false);
             Ok(Self {
                 scalar,
                 ek: EncapsulationKey {

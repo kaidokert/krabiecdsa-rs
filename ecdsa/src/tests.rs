@@ -1071,20 +1071,28 @@ mod ecdh_tests {
         );
         assert!(EncapsulationKey::<P256, U256Ct>::new_from_slice(&bad).is_err());
 
-        // off-curve: flip a low bit of Y
+        // off-curve: flip a low bit of Y — rejected by both entry points.
         let mut bad = good;
         bad[64] ^= 1;
         assert!(
             d.try_decapsulate(&ct_of::<P256, U256Ct>(&bad)).is_err(),
-            "off-curve"
+            "off-curve (decap)"
+        );
+        assert!(
+            EncapsulationKey::<P256, U256Ct>::new_from_slice(&bad).is_err(),
+            "off-curve (key init)"
         );
 
-        // X == p (out of range)
+        // X == p (out of range) — rejected by both entry points.
         let mut bad = good;
         bad[1..33].copy_from_slice(P256::P);
         assert!(
             d.try_decapsulate(&ct_of::<P256, U256Ct>(&bad)).is_err(),
-            "X == p"
+            "X == p (decap)"
+        );
+        assert!(
+            EncapsulationKey::<P256, U256Ct>::new_from_slice(&bad).is_err(),
+            "X == p (key init)"
         );
 
         // wrong length rejects at key init (a fixed-size ciphertext can't even
