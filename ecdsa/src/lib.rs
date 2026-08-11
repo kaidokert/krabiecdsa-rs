@@ -1524,6 +1524,7 @@ pub mod signing {
         (x, valid)
     }
 
+    #[cfg(any(feature = "ecdh", feature = "test-vectors"))]
     /// ECDH core: validate the peer's SEC1-uncompressed point and write the
     /// shared secret `x(d·P)` (affine X, big-endian, `C::ELEM_BYTES`) into
     /// `out`. Returns `false` — zeroing `out` — on a malformed, out-of-range,
@@ -1608,6 +1609,7 @@ pub mod signing {
         bool::from(valid)
     }
 
+    #[cfg(feature = "ecdh")]
     /// Validate a peer's SEC1-uncompressed point — length, `0x04` prefix,
     /// coordinate range (`X,Y < p`), on-curve (`y² = x³ + ax + b`). Public
     /// input only (no secret); the KEM `EncapsulationKey` constructor uses it
@@ -2236,6 +2238,7 @@ pub mod signing {
     }
 }
 
+#[cfg(feature = "ecdh")]
 pub mod ecdh {
     //! Elliptic-curve Diffie–Hellman as a RustCrypto [`kem`] KEM — the TLS 1.3
     //! `key_share` path over P-256 / P-384 / secp256k1.

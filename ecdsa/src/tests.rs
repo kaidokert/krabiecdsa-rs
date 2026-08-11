@@ -916,6 +916,7 @@ mod rustcrypto_signing {
 
 // ECDH (ephemeral) — openssl 3.6.3 cross-impl KATs, self-agreement
 // roundtrip, and peer-point rejection. Public `ecdh` API only.
+#[cfg(feature = "ecdh")]
 mod ecdh_tests {
     use super::*;
     use crate::ecdh::{DecapsulationKey, EcdhCurve, EcdhKem, EncapsulationKey};
