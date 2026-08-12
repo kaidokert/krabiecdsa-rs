@@ -2478,12 +2478,18 @@ pub mod ecdh {
         // `decapsulate`: coordinate λ (one field element) and scalar r (for
         // d + r·n). This is where the `kem` lifecycle's randomness lives —
         // `try_decapsulate` is `&self` with no RNG, so the blinder is fixed at
-        // keygen. It is therefore single-use *by contract*: sound because every
-        // krabitls key-exchange secret is ephemeral (generate → one decapsulate
-        // → drop). A static key decapsulating many ciphertexts would repeat the
-        // mask; that path is out of scope (TLS 1.3 KX is ephemeral-only).
+        // keygen. A fixed mask reused across ciphertexts would let power traces
+        // be averaged against one constant ladder scalar and defeat the
+        // countermeasure, so reuse is *enforced* single-use via `spent` below —
+        // not merely documented. (Sound because every krabitls KX secret is
+        // ephemeral anyway: generate → one decapsulate → drop.)
         blind: Zeroizing<[u8; MAX_ELEM]>,
         scalar_blind: Zeroizing<[u8; SCALAR_BLIND_BYTES]>,
+        // One-shot guard: `false` at keygen, set once by the first decapsulate.
+        // A second decapsulate finds it `true` and fails closed rather than
+        // rerunning the ladder under the same mask. Atomic (not `Cell`) so the
+        // key stays `Sync`; every target that compiles `ecdh` has atomic RMW.
+        spent: core::sync::atomic::AtomicBool,
         ek: EncapsulationKey<C, T>,
     }
 
@@ -2545,6 +2551,7 @@ pub mod ecdh {
                 scalar,
                 blind,
                 scalar_blind,
+                spent: core::sync::atomic::AtomicBool::new(false),
                 ek: EncapsulationKey {
                     point,
                     _p: PhantomData,
@@ -2567,6 +2574,19 @@ pub mod ecdh {
             &self,
             ct: &Ciphertext<Self::Kem>,
         ) -> Result<SharedKey<Self::Kem>, InvalidKey> {
+            // Validate the (public) peer point first, non-consuming — a
+            // malformed ciphertext must not burn the one-shot blinder.
+            if !validate_peer_sec1::<C, T>(ct.as_slice()) {
+                return Err(InvalidKey);
+            }
+            // Single-use: claim the key atomically before running the ladder. A
+            // second decapsulate finds it spent and refuses, rather than rerun
+            // the ladder under the same (λ, r) — which would let traces be
+            // averaged against one constant scalar and void the DPA blinding.
+            // Atomic swap gates the ladder even if `&self` is shared.
+            if self.spent.swap(true, core::sync::atomic::Ordering::Relaxed) {
+                return Err(InvalidKey);
+            }
             let mut shared = SharedKey::<Self::Kem>::default();
             if ecdh_shared_x_ct::<C, T>(
                 &self.scalar[..C::ELEM_BYTES],

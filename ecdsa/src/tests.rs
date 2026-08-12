@@ -1052,6 +1052,26 @@ mod ecdh_tests {
         assert_eq!(ss_send.as_slice(), ss_recv.as_slice());
     }
 
+    // The keygen-drawn blinder is single-use: a second decapsulate on the same
+    // key would rerun the ladder under the same mask, so it must fail closed.
+    #[test]
+    fn ecdh_decapsulate_is_single_use() {
+        let recipient = dk::<P256, U256Ct>(&hx::<32>(
+            "3d4c99e2be01c8bf2fae12350491bf8e166abaea13f942db5f596396d8ca1bc0",
+        ));
+        let peer = hx::<65>(
+            "04c00cebaf052b8d8720f20639a891a6093727d460631d1e1ba909e0c4b41687b508abf40702be0e8fb6c6139737fcfee5d67a00d291dc7588faf3aa92307b27b7",
+        );
+        let ct = ct_of::<P256, U256Ct>(&peer);
+        // First use succeeds; the key is now spent.
+        assert!(recipient.try_decapsulate(&ct).is_ok());
+        // A second, otherwise-valid decapsulate on the same key is refused.
+        assert!(
+            recipient.try_decapsulate(&ct).is_err(),
+            "reuse must fail closed, not rerun under the same mask"
+        );
+    }
+
     #[test]
     fn ecdh_rejects_invalid_peer() {
         let d = dk::<P256, U256Ct>(&hx::<32>(
