@@ -28,13 +28,16 @@ const TRIALS: usize = 4;
 // keys* so not a leak) that settles after ~3 executions; earlier `= 1` left it
 // straddling the measured trials. Four warmups push all timed trials past it.
 const WARMUP_BLOCKS: usize = 4;
-// Tight absolute within-class cycle-spread tolerance for the positive fixtures.
-// Deliberately kept tight (settled spread is ~15 cycles): it is a *complementary
-// tripwire* to the between-key Welch gate. At TRIALS=4 the Welch t-test (4.5
-// threshold, krabi-caliper.toml) cannot resolve a mid-size key-dependent offset
-// — a ~1000-cycle leak yields |t|≈2.3 — but such an offset blows this spread
-// bound and fails closed. Loosening it to swallow the warmup transient would
-// reopen that blind spot, so the transient is removed via WARMUP_BLOCKS instead.
+// Tight absolute bound on the positive fixtures' combined A∪B cycle-span
+// (`max(A.max, B.max) − min(A.min, B.min)` across both key classes — not a
+// within-class spread; `positive_require_overlap` is false, so overlapping A/B
+// ranges are not required). Deliberately tight (settled span is ~15 cycles): it
+// is a *complementary tripwire* to the between-key Welch gate. At TRIALS=4 the
+// Welch t-test (4.5 threshold, krabi-caliper.toml) cannot resolve a mid-size
+// key-dependent offset — a ~1000-cycle leak yields |t|≈2.3 — but a between-class
+// offset that size widens this combined span past the bound and fails closed.
+// Loosening it to swallow the warmup transient would reopen that blind spot, so
+// the transient is removed via WARMUP_BLOCKS instead.
 const MAX_POSITIVE_SPREAD: u64 = 64;
 const SUITE: &str = "krabiecdsa-p256-sign";
 const STACK_SAFE_ZONE: usize = 512;
