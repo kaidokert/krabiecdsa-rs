@@ -1107,12 +1107,21 @@ mod ecdh_tests {
             "empty"
         );
     }
+}
+
+// Raw hazmat ECDH DH primitive (`test-vectors`) — uses no `kem` API, so its
+// zero-on-failure contract must still be exercised when `ecdh` is off (e.g.
+// `--no-default-features --features test-vectors`, as the ct-verify crates
+// build). Kept out of the `ecdh`-gated module above for that reason.
+#[cfg(feature = "test-vectors")]
+mod ecdh_hazmat_tests {
+    use super::*;
+    use crate::p256::P256;
+    use crate::signing::ecdh_diffie_hellman_ct;
 
     // Zero-output-on-failure contract on the raw hazmat entry point.
     #[test]
-    #[cfg(feature = "test-vectors")]
     fn ecdh_zeroes_out_on_failure() {
-        use crate::signing::ecdh_diffie_hellman_ct;
         let d = hx::<32>("3d4c99e2be01c8bf2fae12350491bf8e166abaea13f942db5f596396d8ca1bc0");
         let mut good = hx::<65>(
             "04c00cebaf052b8d8720f20639a891a6093727d460631d1e1ba909e0c4b41687b508abf40702be0e8fb6c6139737fcfee5d67a00d291dc7588faf3aa92307b27b7",
