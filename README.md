@@ -33,8 +33,8 @@ cycle/time proxies in the full matrices.
 Constant-time signing and ECDH cost more — RCB complete formulas, `FieldCt`
 arithmetic, and the RFC 6979 HMAC-SHA256 DRBG. The guarantee is timing-only;
 the randomized signer and ECDH add projective-coordinate and scalar (`k + r·n`)
-blinding against power/EM DPA, with hardware TVLA validation still outstanding.
-See the `signing` module docs for the full side-channel scope.
+blinding against power/EM DPA. See the `signing` module docs for the full
+side-channel scope.
 
 | Target | Op | Curve | .text (KiB) | Stack (bytes) |
 | ------ | -- | ----- | ----------: | ------------: |
