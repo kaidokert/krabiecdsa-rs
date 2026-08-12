@@ -17,8 +17,15 @@ signature = { version = "3.0", default-features = false, features = ["rand_core"
 zeroize = { version = "1", default-features = false }
 digest = { version = "0.11", default-features = false, features = ["mac"] }
 subtle = { version = "2.6", default-features = false }
+kem = { version = "0.3", default-features = false, optional = true }
 
 [features]
+default = ["ecdh"]
+# ECDH key agreement via the RustCrypto `kem` traits. Pulls `kem` +
+# `hybrid-array`; on by default but opt-out (`default-features = false`) for
+# verify/sign-only builds that don't want the dependency — notably the
+# hardware timing benchmark, whose M4 cycle spread is layout-sensitive.
+ecdh = ["dep:kem"]
 # Exposes the hazmat known-answer-test primitives — sign-with-caller-nonce
 # (`sign_prehashed_ct_with_k`) and raw nonce derivation
 # (`derive_nonce_rfc6979_ct`). Neither is a production operation (an explicit

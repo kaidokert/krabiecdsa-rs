@@ -916,16 +916,20 @@ mod rustcrypto_signing {
 
 // ECDH (ephemeral) — openssl 3.6.3 cross-impl KATs, self-agreement
 // roundtrip, and peer-point rejection. Public `ecdh` API only.
+#[cfg(feature = "ecdh")]
 mod ecdh_tests {
     use super::*;
-    use crate::ecdh::EphemeralSecret;
+    use crate::ecdh::{DecapsulationKey, EcdhCurve, EcdhKem, EncapsulationKey};
     use crate::p256::P256;
     use crate::p384::P384;
     use crate::signing::ConstantTimeInt;
+    use kem::common::array::Array;
+    use kem::{
+        Ciphertext, Decapsulator, Encapsulate, Generate, KeyExport, TryDecapsulate, TryKeyInit,
+    };
 
-    // RNG double that yields fixed bytes, then fails — lets a KAT drive
-    // `EphemeralSecret::random` to a specific (in-range) openssl scalar,
-    // which it accepts on the first draw.
+    // Fixed-bytes RNG (`TryCryptoRng`): drives `Generate` to a specific
+    // (in-range) openssl scalar, accepted on the first draw.
     struct FixedRng<'a> {
         data: &'a [u8],
         pos: usize,
@@ -950,60 +954,46 @@ mod ecdh_tests {
             Ok(())
         }
     }
+    // `Error = Infallible` makes `FixedRng` a `CryptoRng` (blanket impl), so it
+    // also drives `encapsulate_with_rng`.
     impl signature::rand_core::TryCryptoRng for FixedRng<'_> {}
 
-    // Distinct-stream counter RNG for the roundtrip (two independent keys).
-    struct CountRng(u8);
-    impl signature::rand_core::TryRng for CountRng {
-        type Error = core::convert::Infallible;
-        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-            let mut b = [0u8; 4];
-            self.try_fill_bytes(&mut b)?;
-            Ok(u32::from_le_bytes(b))
-        }
-        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-            let mut b = [0u8; 8];
-            self.try_fill_bytes(&mut b)?;
-            Ok(u64::from_le_bytes(b))
-        }
-        fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
-            for x in dst {
-                self.0 = self.0.wrapping_add(1);
-                *x = self.0;
-            }
-            Ok(())
-        }
-    }
-    impl signature::rand_core::TryCryptoRng for CountRng {}
-
-    fn eph<C: Curve, T: ConstantTimeInt>(scalar: &[u8]) -> EphemeralSecret<C, T> {
-        EphemeralSecret::<C, T>::random(&mut FixedRng {
+    fn dk<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static>(
+        scalar: &[u8],
+    ) -> DecapsulationKey<C, T> {
+        DecapsulationKey::<C, T>::try_generate_from_rng(&mut FixedRng {
             data: scalar,
             pos: 0,
         })
-        .expect("in-range scalar")
+        .unwrap()
     }
 
-    // openssl-derived shared secret reproduced from both directions, and
-    // each side's public key matches openssl's.
-    fn kat<C: Curve, T: ConstantTimeInt>(
+    fn ct_of<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static>(
+        sec1: &[u8],
+    ) -> Ciphertext<EcdhKem<C, T>> {
+        Array::try_from(sec1).expect("ciphertext length")
+    }
+
+    // openssl-derived shared secret reproduced both directions, and each side's
+    // encapsulation key (`d·G`) matches openssl's public key.
+    fn kat<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static>(
         priv_a: &[u8],
         pub_a: &[u8],
         priv_b: &[u8],
         pub_b: &[u8],
         shared: &[u8],
     ) {
-        let a = eph::<C, T>(priv_a);
-        let b = eph::<C, T>(priv_b);
-        assert_eq!(a.public_key().unwrap().as_sec1_bytes(), pub_a, "pub A");
-        assert_eq!(b.public_key().unwrap().as_sec1_bytes(), pub_b, "pub B");
+        let a = dk::<C, T>(priv_a);
+        let b = dk::<C, T>(priv_b);
+        assert_eq!(a.encapsulation_key().to_bytes().as_slice(), pub_a, "pub A");
+        assert_eq!(b.encapsulation_key().to_bytes().as_slice(), pub_b, "pub B");
         assert_eq!(
-            a.diffie_hellman(pub_b).unwrap().as_bytes(),
+            a.try_decapsulate(&ct_of::<C, T>(pub_b)).unwrap().as_slice(),
             shared,
             "A·b agrees"
         );
         assert_eq!(
-            b.diffie_hellman(pub_a).unwrap().as_bytes(),
+            b.try_decapsulate(&ct_of::<C, T>(pub_a)).unwrap().as_slice(),
             shared,
             "B·a agrees"
         );
@@ -1045,63 +1035,98 @@ mod ecdh_tests {
         );
     }
 
+    // Full KEM roundtrip: sender encapsulates against the recipient's key,
+    // recipient decapsulates the ciphertext — the two shared secrets agree.
     #[test]
-    fn ecdh_roundtrip_agrees() {
-        let a = EphemeralSecret::<P256, U256Ct>::random(&mut CountRng(1)).unwrap();
-        let b = EphemeralSecret::<P256, U256Ct>::random(&mut CountRng(0x80)).unwrap();
-        // Grab both public keys before agreement consumes the secrets.
-        let a_pub = a.public_key().unwrap();
-        let b_pub = b.public_key().unwrap();
-        let sa = a.diffie_hellman(b_pub.as_sec1_bytes()).unwrap();
-        let sb = b.diffie_hellman(a_pub.as_sec1_bytes()).unwrap();
-        assert_eq!(sa.as_bytes(), sb.as_bytes());
+    fn ecdh_kem_roundtrip() {
+        let recipient = dk::<P256, U256Ct>(&hx::<32>(
+            "3d4c99e2be01c8bf2fae12350491bf8e166abaea13f942db5f596396d8ca1bc0",
+        ));
+        let ek = recipient.encapsulation_key().clone();
+        // Arbitrary in-range bytes seed the ephemeral `e` drawn inside encaps.
+        let (ct, ss_send) = ek.encapsulate_with_rng(&mut FixedRng {
+            data: &hx::<32>("a6e3c57dd01abe90086538398355dd4c3b17aa873382b0f24d6129493d8aad60"),
+            pos: 0,
+        });
+        let ss_recv = recipient.try_decapsulate(&ct).unwrap();
+        assert_eq!(ss_send.as_slice(), ss_recv.as_slice());
     }
 
     #[test]
     fn ecdh_rejects_invalid_peer() {
-        const D: &str = "3d4c99e2be01c8bf2fae12350491bf8e166abaea13f942db5f596396d8ca1bc0";
-        // `diffie_hellman` consumes the one-shot secret, so each case gets a
-        // fresh ephemeral (same scalar).
-        let fresh = || eph::<P256, U256Ct>(&hx::<32>(D));
+        let d = dk::<P256, U256Ct>(&hx::<32>(
+            "3d4c99e2be01c8bf2fae12350491bf8e166abaea13f942db5f596396d8ca1bc0",
+        ));
         let good = hx::<65>(
             "04c00cebaf052b8d8720f20639a891a6093727d460631d1e1ba909e0c4b41687b508abf40702be0e8fb6c6139737fcfee5d67a00d291dc7588faf3aa92307b27b7",
         );
-        assert!(
-            fresh().diffie_hellman(&good).is_some(),
-            "sanity: good peer agrees"
-        );
+        assert!(d.try_decapsulate(&ct_of::<P256, U256Ct>(&good)).is_ok());
+        assert!(EncapsulationKey::<P256, U256Ct>::new_from_slice(&good).is_ok());
 
-        // wrong SEC1 prefix (compressed / not 0x04)
+        // wrong SEC1 prefix (not 0x04)
         let mut bad = good;
         bad[0] = 0x02;
-        assert!(fresh().diffie_hellman(&bad).is_none(), "bad prefix");
+        assert!(
+            d.try_decapsulate(&ct_of::<P256, U256Ct>(&bad)).is_err(),
+            "bad prefix"
+        );
+        assert!(EncapsulationKey::<P256, U256Ct>::new_from_slice(&bad).is_err());
 
-        // off-curve: flip a low bit of Y
+        // off-curve: flip a low bit of Y — rejected by both entry points.
         let mut bad = good;
         bad[64] ^= 1;
-        assert!(fresh().diffie_hellman(&bad).is_none(), "off-curve");
+        assert!(
+            d.try_decapsulate(&ct_of::<P256, U256Ct>(&bad)).is_err(),
+            "off-curve (decap)"
+        );
+        assert!(
+            EncapsulationKey::<P256, U256Ct>::new_from_slice(&bad).is_err(),
+            "off-curve (key init)"
+        );
 
-        // X == p (out of range: must be < p)
+        // X == p (out of range) — rejected by both entry points.
         let mut bad = good;
         bad[1..33].copy_from_slice(P256::P);
-        assert!(fresh().diffie_hellman(&bad).is_none(), "X == p");
+        assert!(
+            d.try_decapsulate(&ct_of::<P256, U256Ct>(&bad)).is_err(),
+            "X == p (decap)"
+        );
+        assert!(
+            EncapsulationKey::<P256, U256Ct>::new_from_slice(&bad).is_err(),
+            "X == p (key init)"
+        );
 
-        // truncated key_share
-        assert!(fresh().diffie_hellman(&good[..64]).is_none(), "short");
-        assert!(fresh().diffie_hellman(&[]).is_none(), "empty");
+        // wrong length rejects at key init (a fixed-size ciphertext can't even
+        // be built from a short slice)
+        assert!(
+            EncapsulationKey::<P256, U256Ct>::new_from_slice(&good[..64]).is_err(),
+            "short"
+        );
+        assert!(
+            EncapsulationKey::<P256, U256Ct>::new_from_slice(&[]).is_err(),
+            "empty"
+        );
     }
+}
 
-    // Zero-output-on-failure contract: a nonzero `out` buffer must come back
-    // fully zeroed when the peer point is rejected (raw hazmat entry point).
+// Raw hazmat ECDH DH primitive (`test-vectors`) — uses no `kem` API, so its
+// zero-on-failure contract must still be exercised when `ecdh` is off (e.g.
+// `--no-default-features --features test-vectors`, as the ct-verify crates
+// build). Kept out of the `ecdh`-gated module above for that reason.
+#[cfg(feature = "test-vectors")]
+mod ecdh_hazmat_tests {
+    use super::*;
+    use crate::p256::P256;
+    use crate::signing::ecdh_diffie_hellman_ct;
+
+    // Zero-output-on-failure contract on the raw hazmat entry point.
     #[test]
-    #[cfg(feature = "test-vectors")]
     fn ecdh_zeroes_out_on_failure() {
-        use crate::signing::ecdh_diffie_hellman_ct;
         let d = hx::<32>("3d4c99e2be01c8bf2fae12350491bf8e166abaea13f942db5f596396d8ca1bc0");
         let mut good = hx::<65>(
             "04c00cebaf052b8d8720f20639a891a6093727d460631d1e1ba909e0c4b41687b508abf40702be0e8fb6c6139737fcfee5d67a00d291dc7588faf3aa92307b27b7",
         );
-        good[64] ^= 1; // off-curve → rejected
+        good[64] ^= 1; // off-curve -> rejected
         let mut out = [0xabu8; 32];
         assert!(!ecdh_diffie_hellman_ct::<P256, U256Ct>(&d, &good, &mut out));
         assert_eq!(out, [0u8; 32], "out must be zeroed on failure");
