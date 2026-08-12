@@ -1541,6 +1541,8 @@ pub mod signing {
     pub(crate) fn ecdh_shared_x_ct<C: Curve, T: ConstantTimeInt>(
         d: &[u8],
         peer_sec1: &[u8],
+        blind: &[u8],
+        scalar_blind: &[u8],
         out: &mut [u8],
     ) -> bool {
         const {
@@ -1557,7 +1559,19 @@ pub mod signing {
         // documented contract) — the secret-validity outcome is masked in
         // branchlessly at the end, never used to pick a failure branch.
         out.iter_mut().for_each(|b| *b = 0);
-        if d.len() != eb || peer_sec1.len() != 1 + 2 * eb || peer_sec1[0] != 0x04 {
+        // Blinder shapes are public/config, so these branch freely. A nonempty
+        // `blind` (coordinate λ) is one field element; a nonempty
+        // `scalar_blind` (r for d + r·n) is `SCALAR_BLIND_BYTES` and additionally
+        // requires `T` to be exactly the field width — `blind_scalar`'s widening
+        // multiply splits at the field boundary only then (see the sign core).
+        // Fail closed rather than silently mis-blind.
+        if d.len() != eb
+            || peer_sec1.len() != 1 + 2 * eb
+            || peer_sec1[0] != 0x04
+            || (!blind.is_empty() && blind.len() != eb)
+            || (!scalar_blind.is_empty()
+                && (scalar_blind.len() != SCALAR_BLIND_BYTES || core::mem::size_of::<T>() != eb))
+        {
             return false;
         }
         let p = from_be::<T>(C::P);
@@ -1589,12 +1603,42 @@ pub mod signing {
             return false;
         }
 
-        let peer = PointCt {
-            x: qx_r,
-            y: qy_r,
-            z: fp.one(),
+        // Coordinate randomization: (X:Y:Z) ~ (λX:λY:λZ) leaves the affine
+        // result X/Z (the shared x) unchanged but runs every ladder trace on
+        // different field values, defeating DPA/CPA averaging on `d·P`. λ is
+        // public randomness (empty => unblinded z = 1); λ = 0 collapses the
+        // point, so guard it (that branch is on public λ, reveals no secret).
+        let peer = if blind.is_empty() {
+            PointCt {
+                x: qx_r,
+                y: qy_r,
+                z: fp.one(),
+            }
+        } else {
+            let lambda = fp.reduce(&from_be::<T>(blind));
+            let lambda = if bool::from(fp.into_raw(&lambda).ct_is_zero()) {
+                fp.one()
+            } else {
+                lambda
+            };
+            PointCt {
+                x: fp.mul(&qx_r, &lambda),
+                y: fp.mul(&qy_r, &lambda),
+                z: lambda,
+            }
         };
-        let shared = scalar_mul_ct(&fp, &a_res, &b3, d, &peer);
+        // Scalar blinding: multiply by d' = d + r·n instead of d. The peer point
+        // has order n (on-curve + cofactor 1 on every supported curve), so
+        // n·P = O and d'·P = d·P — same shared secret, but a different, wider
+        // scalar each handshake. The blinded d' is secret, so zeroize it.
+        let shared = if scalar_blind.is_empty() {
+            scalar_mul_ct(&fp, &a_res, &b3, d, &peer)
+        } else {
+            let l = eb + SCALAR_BLIND_BYTES + 1;
+            let mut dp = zeroize::Zeroizing::new([0u8; MAX_ELEM + SCALAR_BLIND_BYTES + 1]);
+            blind_scalar::<T>(d, scalar_blind, C::N, &mut dp[..l]);
+            scalar_mul_ct(&fp, &a_res, &b3, &dp[..l], &peer)
+        };
         let (sx, sx_ok) = affine_x_ct(&fp, &shared);
         // `ok` (secret `d` range) and `sx_ok` (identity result) are secret-
         // dependent, so never branch on them: serialize unconditionally, then
@@ -1708,7 +1752,10 @@ pub mod signing {
         peer_sec1: &[u8],
         out: &mut [u8],
     ) -> bool {
-        ecdh_shared_x_ct::<C, T>(private_key, peer_sec1, out)
+        // KAT entry: unblinded (empty blinders) to reproduce the deterministic
+        // openssl ECDH vectors. Blinding never changes the shared secret; the
+        // DecapsulationKey decapsulate path is the one that applies it.
+        ecdh_shared_x_ct::<C, T>(private_key, peer_sec1, &[], &[], out)
     }
 
     /// Core RCB signature math given the nonce `k` — always compiled; the
@@ -2262,7 +2309,8 @@ pub mod ecdh {
     //! deriving keying material, as with any `kem` implementation. The secret
     //! scalar inside a [`DecapsulationKey`] is zeroized on drop.
     use crate::signing::{
-        ConstantTimeInt, MAX_ELEM, SigningKey, ecdh_shared_x_ct, validate_peer_sec1,
+        ConstantTimeInt, MAX_ELEM, SCALAR_BLIND_BYTES, SigningKey, ecdh_shared_x_ct,
+        validate_peer_sec1,
     };
     use crate::{Curve, from_be, k256, p256, p384};
     use core::marker::PhantomData;
@@ -2403,9 +2451,14 @@ pub mod ecdh {
             let eph = DecapsulationKey::<C, T>::generate_from_rng(rng);
             let ct = eph.ek.point.clone();
             let mut shared = SharedKey::<Self::Kem>::default();
+            // Blind e·peer with the fresh ephemeral's own keygen blinders — a
+            // one-shot secret generated and consumed right here, so the
+            // single-use contract is exact.
             let ok = ecdh_shared_x_ct::<C, T>(
                 &eph.scalar[..C::ELEM_BYTES],
                 self.point.as_slice(),
+                &eph.blind[..C::ELEM_BYTES],
+                &eph.scalar_blind[..],
                 shared.as_mut_slice(),
             );
             // `self` was validated at `TryKeyInit` and `eph` carries a valid
@@ -2421,6 +2474,16 @@ pub mod ecdh {
     /// [`EncapsulationKey`] is `d·G`. The scalar is zeroized on drop.
     pub struct DecapsulationKey<C: EcdhCurve, T> {
         scalar: Zeroizing<[u8; MAX_ELEM]>,
+        // Per-key DPA blinders drawn from the generation RNG and spent in
+        // `decapsulate`: coordinate λ (one field element) and scalar r (for
+        // d + r·n). This is where the `kem` lifecycle's randomness lives —
+        // `try_decapsulate` is `&self` with no RNG, so the blinder is fixed at
+        // keygen. It is therefore single-use *by contract*: sound because every
+        // krabitls key-exchange secret is ephemeral (generate → one decapsulate
+        // → drop). A static key decapsulating many ciphertexts would repeat the
+        // mask; that path is out of scope (TLS 1.3 KX is ephemeral-only).
+        blind: Zeroizing<[u8; MAX_ELEM]>,
+        scalar_blind: Zeroizing<[u8; SCALAR_BLIND_BYTES]>,
         ek: EncapsulationKey<C, T>,
     }
 
@@ -2430,9 +2493,13 @@ pub mod ecdh {
         ) -> Result<Self, R::Error> {
             const {
                 assert!(C::ELEM_BYTES <= MAX_ELEM, "ELEM_BYTES exceeds MAX_ELEM");
+                // Exactly the field width (not just `>=`): the scalar blinder
+                // d + r·n uses the backend's widening multiply, whose limb split
+                // lands at the field boundary only at exact width (see the sign
+                // core). Every real ECDH backend already satisfies this.
                 assert!(
-                    core::mem::size_of::<T>() >= C::ELEM_BYTES,
-                    "backend type narrower than the curve's field element"
+                    core::mem::size_of::<T>() == C::ELEM_BYTES,
+                    "ECDH backend must be exactly the curve's field width"
                 );
                 assert!(
                     <C::SharedSize as Unsigned>::USIZE == C::ELEM_BYTES,
@@ -2465,8 +2532,19 @@ pub mod ecdh {
                     break;
                 }
             }
+            // Draw the DPA blinders from the same generation RNG — the standard
+            // randomness slot for the KEM lifecycle — to be spent once at
+            // decapsulate. A weak λ or r only weakens the masking, never
+            // correctness, so no rejection is needed (λ = 0 is re-guarded in the
+            // scalar mult).
+            let mut blind = Zeroizing::new([0u8; MAX_ELEM]);
+            let mut scalar_blind = Zeroizing::new([0u8; SCALAR_BLIND_BYTES]);
+            signature::rand_core::TryRng::try_fill_bytes(rng, &mut blind[..eb])?;
+            signature::rand_core::TryRng::try_fill_bytes(rng, &mut scalar_blind[..])?;
             Ok(Self {
                 scalar,
+                blind,
+                scalar_blind,
                 ek: EncapsulationKey {
                     point,
                     _p: PhantomData,
@@ -2493,6 +2571,8 @@ pub mod ecdh {
             if ecdh_shared_x_ct::<C, T>(
                 &self.scalar[..C::ELEM_BYTES],
                 ct.as_slice(),
+                &self.blind[..C::ELEM_BYTES],
+                &self.scalar_blind[..],
                 shared.as_mut_slice(),
             ) {
                 Ok(shared)
