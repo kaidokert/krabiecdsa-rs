@@ -8,8 +8,9 @@ Both scalars are copied into the same stack slot before measurement (no
 address/alignment bias between the A and B classes), and preflight derives each
 public key, signs the common digest, and verifies before any timing evidence is
 accepted. Four trials per key run in balanced ABBA order with equal warm-up,
-interrupts masked, DWT barriers, observable outputs, and a 32-cycle
-positive-spread gate.
+interrupts masked, DWT barriers, observable outputs, and a 64-cycle
+positive combined-span gate (the A∪B cycle range, `max(A.max, B.max) −
+min(A.min, B.min)`).
 
 ## Two clock tiers (coverage vs. speed)
 
@@ -20,8 +21,9 @@ carrier runs faster as functional smoke — together ~15 min:
 
 - **CT gate — `u32x8` at 30 MHz / 0 wait states.** 0 WS means no ART
   prefetch/I-cache, so core-cycle counts carry no fetch jitter and the tight
-  32-cycle spread gate holds; determinism makes a small sample count valid.
-  The real gate.
+  64-cycle combined-span gate holds; determinism makes a small sample count
+  valid. This span gate is a tripwire complementing the between-key Welch
+  leak gate (`|t|` < 4.5); the real leak gate is Welch.
 - **Smoke — `u8x32` (byte limb) at 168 MHz, `gate = false`.** The byte-limb
   sign is ~10× u32x8 and would time out at 30 MHz; 168 MHz keeps wall time
   bounded. Not a CT gate — u8x32's constant-time property is proven at the
