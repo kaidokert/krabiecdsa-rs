@@ -11,18 +11,18 @@ arithmetic is generic over bigint backend traits, built on
 [fixed-bigint](https://crates.io/crates/fixed-bigint) as the tested backend.
 `no_std`, no allocator, no panics. RustCrypto [signature](https://crates.io/crates/signature) traits are supported both ways: `PrehashVerifier`/`DigestVerifier` for verification, and `PrehashSigner`/`RandomizedPrehashSigner`/`DigestSigner`/`RandomizedDigestSigner`/`Keypair` for constant-time signing. ECDH key agreement is exposed through the RustCrypto [kem](https://crates.io/crates/kem) traits (`Encapsulate`/`TryDecapsulate`).
 
-#### Resource usage (as of 0.2.0)
+#### Resource usage (as of 0.6.0)
 
 | Target | Curve | Backend | .text (KiB) | Stack (bytes) |
 | ------ | ----- | ------- | ----------: | ------------: |
-| Cortex-M0 | P-256 | u32×8 | 7.1 | 1384 |
-| Cortex-M0 | P-384 | u32×12 | 7.2 | 2080 |
-| Cortex-M3 | P-256 | u32×8 | 7.1 | 1344 |
-| Cortex-M3 | P-384 | u32×12 | 7.2 | 2032 |
-| RV32IMAC | P-256 | u32×8 | 9.3 | 1392 |
-| RV32IMAC | P-384 | u32×12 | 9.4 | 2080 |
-| AVR ATmega2560 | P-256 | u8×32 | 10.6 | 2486 |
-| AVR ATmega2560 | P-384 | u8×48 | 10.7 | 3686 |
+| Cortex-M0 | P-256 | u32×8 | 7.7 | 1304 |
+| Cortex-M0 | P-384 | u32×12 | 8.0 | 1960 |
+| Cortex-M3 | P-256 | u32×8 | 7.6 | 1272 |
+| Cortex-M3 | P-384 | u32×12 | 7.8 | 1928 |
+| RV32IMAC | P-256 | u32×8 | 8.7 | 1280 |
+| RV32IMAC | P-384 | u32×12 | 9.0 | 1936 |
+| AVR ATmega2560 | P-256 | u8×32 | 10.8 | 2418 |
+| AVR ATmega2560 | P-384 | u8×48 | 11.0 | 3586 |
 
 These numbers are what verification adds over a bare-firmware baseline,
 measured on emulators (QEMU for Cortex-M and RISC-V, simavr for AVR) and
