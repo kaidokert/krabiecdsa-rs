@@ -9,7 +9,7 @@ ECDSA over NIST P-256, secp256k1 and NIST P-384 for microcontrollers. The
 arithmetic is generic over bigint backend traits, built on
 [modmath](https://crates.io/crates/modmath), with
 [fixed-bigint](https://crates.io/crates/fixed-bigint) as the tested backend.
-`no_std`, no allocator, no panics. RustCrypto [signature](https://crates.io/crates/signature) traits are supported both ways: `PrehashVerifier`/`DigestVerifier` for verification, and `PrehashSigner`/`RandomizedPrehashSigner`/`DigestSigner`/`RandomizedDigestSigner`/`Keypair` for constant-time signing. ECDH key agreement is exposed through the RustCrypto [kem](https://crates.io/crates/kem) traits (`Encapsulate`/`Decapsulate`).
+`no_std`, no allocator, no panics. RustCrypto [signature](https://crates.io/crates/signature) traits are supported both ways: `PrehashVerifier`/`DigestVerifier` for verification, and `PrehashSigner`/`RandomizedPrehashSigner`/`DigestSigner`/`RandomizedDigestSigner`/`Keypair` for constant-time signing. ECDH key agreement is exposed through the RustCrypto [kem](https://crates.io/crates/kem) traits (`Encapsulate`/`TryDecapsulate`).
 
 #### Resource usage (as of 0.2.0)
 

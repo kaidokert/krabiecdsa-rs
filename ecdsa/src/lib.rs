@@ -2299,9 +2299,11 @@ pub mod ecdh {
     //! is the raw affine X — no KDF is applied (TLS derives keys with HKDF).
     //!
     //! The secret scalar multiply runs the same constant-time, taint-gated
-    //! ladder as signing, and peer points are fully validated (SEC1 decode,
-    //! coordinate range, on-curve) before use. Unblinded — coordinate/scalar
-    //! blinding is a follow-up.
+    //! ladder as signing, with the same projective-coordinate and scalar
+    //! (`d + r·n`) blinding against power/EM DPA — drawn from the generation
+    //! RNG and spent once (a second decapsulate on one key fails closed, as
+    //! reusing the mask would void the blinding). Peer points are fully
+    //! validated (SEC1 decode, coordinate range, on-curve) before use.
     //!
     //! The `kem` [`SharedKey`] is a plain `hybrid-array` buffer
     //! (the trait's return type — not wrappable in `Zeroizing` without leaving
