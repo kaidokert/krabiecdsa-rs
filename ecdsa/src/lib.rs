@@ -2364,7 +2364,9 @@ pub mod ecdh {
     /// unblinded monomorphization strips the blinder draws and single-use guard
     /// at compile time — no runtime branch.
     pub trait Blinding: sealed::Sealed {
-        /// Whether decapsulation applies DPA blinding (and enforces single-use).
+        /// Whether the secret scalar multiply is DPA-blinded — both the
+        /// ephemeral multiply in encapsulation and the long-term one in
+        /// decapsulation. Under `Blinded`, decapsulation also enforces single-use.
         const BLIND: bool;
     }
     /// Constant-time ECDH with no DPA blinding — the default, footprint-minimal

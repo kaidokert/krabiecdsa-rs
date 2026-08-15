@@ -1094,6 +1094,24 @@ mod ecdh_tests {
         );
     }
 
+    // Peer validation runs before the single-use claim, so a rejected ciphertext
+    // must not burn a `Blinded` key — a valid decapsulate after it still works.
+    #[test]
+    fn ecdh_rejected_ciphertext_does_not_spend_blinded_key() {
+        let key = dk_blinded::<P256, U256Ct>(&hx::<32>(
+            "3d4c99e2be01c8bf2fae12350491bf8e166abaea13f942db5f596396d8ca1bc0",
+        ));
+        let peer = hx::<65>(
+            "04c00cebaf052b8d8720f20639a891a6093727d460631d1e1ba909e0c4b41687b508abf40702be0e8fb6c6139737fcfee5d67a00d291dc7588faf3aa92307b27b7",
+        );
+        // Off-curve point → rejected at validation, before the spent claim.
+        let mut bad = peer;
+        bad[64] ^= 1;
+        assert!(key.try_decapsulate(&ct_of::<P256, U256Ct>(&bad)).is_err());
+        // The key is not spent: a valid ciphertext still decapsulates.
+        assert!(key.try_decapsulate(&ct_of::<P256, U256Ct>(&peer)).is_ok());
+    }
+
     #[test]
     fn ecdh_rejects_invalid_peer() {
         let d = dk::<P256, U256Ct>(&hx::<32>(
