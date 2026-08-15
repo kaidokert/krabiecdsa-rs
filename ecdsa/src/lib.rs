@@ -2301,12 +2301,11 @@ pub mod ecdh {
     //! The secret scalar multiply always runs the same constant-time, taint-gated
     //! ladder as signing, and peer points are fully validated (SEC1 decode,
     //! coordinate range, on-curve) before use. DPA blinding is an opt-in
-    //! personality selected by the [`Blinding`] type tag: the default
-    //! [`Unblinded`] is constant-time only, while [`Blinded`] layers
-    //! projective-coordinate and scalar (`d + r·n`) blinding on top — drawn from
-    //! the generation RNG and spent once (a second `Blinded` decapsulate fails
-    //! closed, as reusing the mask would void the blinding). Pick the personality
-    //! per instantiation, as with `PrehashSigningKey` vs `RandomizedSigningKey`.
+    //! [`Blinding`] tag: the default [`Unblinded`] is constant-time only;
+    //! [`Blinded`] layers projective-coordinate and scalar (`d + r·n`) blinding
+    //! on top, drawn at keygen and spent once (a second `Blinded` decapsulate
+    //! fails closed). Chosen per instantiation, like `PrehashSigningKey` vs
+    //! `RandomizedSigningKey`.
     //!
     //! The `kem` [`SharedKey`] is a plain `hybrid-array` buffer
     //! (the trait's return type — not wrappable in `Zeroizing` without leaving
@@ -2360,12 +2359,10 @@ pub mod ecdh {
 
     /// Blinding personality of an ECDH KEM — a compile-time tag on
     /// [`EcdhKem`]/[`DecapsulationKey`], not a feature. The base primitive is
-    /// always constant-time; blinding is a power/EM-DPA hardening layer on top,
-    /// selected per instantiation like [`crate::signing::PrehashSigningKey`] vs
-    /// [`crate::signing::RandomizedSigningKey`] on the signing side. Sealed: the
-    /// only inhabitants are [`Unblinded`] and [`Blinded`]. `BLIND` is a const, so
-    /// the unblinded monomorphization strips the blinder draws and the single-use
-    /// guard at compile time — no runtime branch.
+    /// always constant-time; [`Blinded`] adds power/EM-DPA hardening on top.
+    /// Sealed to [`Unblinded`] and [`Blinded`]. `BLIND` is a const, so the
+    /// unblinded monomorphization strips the blinder draws and single-use guard
+    /// at compile time — no runtime branch.
     pub trait Blinding: sealed::Sealed {
         /// Whether decapsulation applies DPA blinding (and enforces single-use).
         const BLIND: bool;
@@ -2495,9 +2492,8 @@ pub mod ecdh {
             let ct = eph.ek.point.clone();
             let mut shared = SharedKey::<Self::Kem>::default();
             // Under `Blinded`, blind e·peer with the fresh ephemeral's own keygen
-            // blinders — a one-shot secret generated and consumed right here, so
-            // the single-use contract is exact. `Unblinded` passes empty blinders
-            // (the const strips this branch at monomorphization).
+            // blinders — generated and consumed right here, so single-use is
+            // exact. `Unblinded` passes empty blinders.
             let (blind, scalar_blind): (&[u8], &[u8]) = if B::BLIND {
                 (&eph.blind[..C::ELEM_BYTES], &eph.scalar_blind[..])
             } else {
@@ -2524,13 +2520,12 @@ pub mod ecdh {
     /// [`Blinding`] personality `B` selects whether decapsulation is DPA-blinded.
     pub struct DecapsulationKey<C: EcdhCurve, T, B = Unblinded> {
         scalar: Zeroizing<[u8; MAX_ELEM]>,
-        // Per-key DPA blinders, populated and used only under `Blinded`: the
-        // coordinate λ (one field element) and scalar r (for d + r·n), drawn from
-        // the generation RNG — the one randomness slot in the `kem` lifecycle,
-        // since `try_decapsulate` is `&self` with no RNG. Under `Unblinded` these
-        // stay zero and unread. (Carried unconditionally rather than made a
-        // `B`-associated store to keep the generics simple; ~40 bytes on an
-        // ephemeral key.)
+        // Per-key DPA blinders, used only under `Blinded`: coordinate λ (one
+        // field element) and scalar r (for d + r·n), drawn at keygen — the one
+        // randomness slot in the `kem` lifecycle, since `try_decapsulate` is
+        // `&self` with no RNG. Carried unconditionally rather than made a
+        // `B`-associated store to keep the generics simple (~40 bytes on an
+        // ephemeral key); zero and unread under `Unblinded`.
         blind: Zeroizing<[u8; MAX_ELEM]>,
         scalar_blind: Zeroizing<[u8; SCALAR_BLIND_BYTES]>,
         // `Blinded` single-use guard: a fixed mask reused across ciphertexts
@@ -2592,11 +2587,9 @@ pub mod ecdh {
                 }
             }
             // Under `Blinded`, draw the DPA blinders from the same generation RNG
-            // — the standard randomness slot in the KEM lifecycle — to be spent
-            // once at decapsulate. A weak λ or r only weakens the masking, never
-            // correctness, so no rejection is needed (λ = 0 is re-guarded in the
-            // scalar mult). `Unblinded` skips the draws (const-stripped) and
-            // leaves the blinders zero.
+            // to be spent at decapsulate. A weak λ or r only weakens the masking,
+            // never correctness, so no rejection is needed (λ = 0 is re-guarded in
+            // the scalar mult). `Unblinded` skips the draws, leaving them zero.
             let mut blind = Zeroizing::new([0u8; MAX_ELEM]);
             let mut scalar_blind = Zeroizing::new([0u8; SCALAR_BLIND_BYTES]);
             if B::BLIND {
@@ -2642,8 +2635,7 @@ pub mod ecdh {
             // rerun under the same (λ, r), which would let traces be averaged
             // against one constant scalar and void the blinding. The swap gates
             // the ladder even if `&self` is shared. `Unblinded` has no mask to
-            // protect, so it stays reusable and passes empty blinders (both
-            // branches const-strip at monomorphization).
+            // protect, so it stays reusable and passes empty blinders.
             let (blind, scalar_blind): (&[u8], &[u8]) = if B::BLIND {
                 if self.spent.swap(true, core::sync::atomic::Ordering::Relaxed) {
                     return Err(InvalidKey);
