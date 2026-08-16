@@ -2298,12 +2298,14 @@ pub mod ecdh {
     //! [`TryDecapsulate::try_decapsulate`] recovers `x(d·ct)`. The agreed value
     //! is the raw affine X — no KDF is applied (TLS derives keys with HKDF).
     //!
-    //! The secret scalar multiply runs the same constant-time, taint-gated
-    //! ladder as signing, with the same projective-coordinate and scalar
-    //! (`d + r·n`) blinding against power/EM DPA — drawn from the generation
-    //! RNG and spent once (a second decapsulate on one key fails closed, as
-    //! reusing the mask would void the blinding). Peer points are fully
-    //! validated (SEC1 decode, coordinate range, on-curve) before use.
+    //! The secret scalar multiply always runs the same constant-time, taint-gated
+    //! ladder as signing, and peer points are fully validated (SEC1 decode,
+    //! coordinate range, on-curve) before use. DPA blinding is an opt-in
+    //! [`Blinding`] tag: the default [`Unblinded`] is constant-time only;
+    //! [`Blinded`] layers projective-coordinate and scalar (`d + r·n`) blinding
+    //! on top, drawn at keygen and spent once (a second `Blinded` decapsulate
+    //! fails closed). Chosen per instantiation, like `PrehashSigningKey` vs
+    //! `RandomizedSigningKey`.
     //!
     //! The `kem` [`SharedKey`] is a plain `hybrid-array` buffer
     //! (the trait's return type — not wrappable in `Zeroizing` without leaving
@@ -2349,58 +2351,94 @@ pub mod ecdh {
         type Sec1Size = U97;
     }
 
-    /// KEM marker for ECDH over curve `C` with constant-time backend `T`.
-    pub struct EcdhKem<C, T>(PhantomData<fn() -> (C, T)>);
+    mod sealed {
+        pub trait Sealed {}
+        impl Sealed for super::Unblinded {}
+        impl Sealed for super::Blinded {}
+    }
+
+    /// Blinding personality of an ECDH KEM — a compile-time tag on
+    /// [`EcdhKem`]/[`DecapsulationKey`], not a feature. The base primitive is
+    /// always constant-time; [`Blinded`] adds power/EM-DPA hardening on top.
+    /// Sealed to [`Unblinded`] and [`Blinded`]. `BLIND` is a const, so the
+    /// unblinded monomorphization strips the blinder draws and single-use guard
+    /// at compile time — no runtime branch.
+    pub trait Blinding: sealed::Sealed {
+        /// Whether the secret scalar multiply is DPA-blinded — both the
+        /// ephemeral multiply in encapsulation and the long-term one in
+        /// decapsulation. Under `Blinded`, decapsulation also enforces single-use.
+        const BLIND: bool;
+    }
+    /// Constant-time ECDH with no DPA blinding — the default, footprint-minimal
+    /// personality.
+    pub enum Unblinded {}
+    /// Constant-time ECDH plus projective-coordinate and scalar (`d + r·n`)
+    /// blinding for power/EM-DPA resistance, drawn at keygen and spent once
+    /// (single-use: a second decapsulate fails closed). ~2× the scalar-mult cost.
+    pub enum Blinded {}
+    impl Blinding for Unblinded {
+        const BLIND: bool = false;
+    }
+    impl Blinding for Blinded {
+        const BLIND: bool = true;
+    }
+
+    /// KEM marker for ECDH over curve `C` with constant-time backend `T` and
+    /// [`Blinding`] personality `B` (default [`Unblinded`]).
+    #[allow(clippy::type_complexity)] // phantom variance marker, not a real type
+    pub struct EcdhKem<C, T, B = Unblinded>(PhantomData<fn() -> (C, T, B)>);
     // A ZST: every impl is bound-free (it never touches `C`/`T`), so `EcdhKem`
     // satisfies `Kem`'s `Copy + … + Ord` supertraits without constraining the
     // markers.
-    impl<C, T> Clone for EcdhKem<C, T> {
+    impl<C, T, B> Clone for EcdhKem<C, T, B> {
         fn clone(&self) -> Self {
             *self
         }
     }
-    impl<C, T> Copy for EcdhKem<C, T> {}
-    impl<C, T> core::fmt::Debug for EcdhKem<C, T> {
+    impl<C, T, B> Copy for EcdhKem<C, T, B> {}
+    impl<C, T, B> core::fmt::Debug for EcdhKem<C, T, B> {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             f.write_str("EcdhKem")
         }
     }
-    impl<C, T> Default for EcdhKem<C, T> {
+    impl<C, T, B> Default for EcdhKem<C, T, B> {
         fn default() -> Self {
             Self(PhantomData)
         }
     }
-    impl<C, T> PartialEq for EcdhKem<C, T> {
+    impl<C, T, B> PartialEq for EcdhKem<C, T, B> {
         fn eq(&self, _: &Self) -> bool {
             true
         }
     }
-    impl<C, T> Eq for EcdhKem<C, T> {}
-    impl<C, T> PartialOrd for EcdhKem<C, T> {
+    impl<C, T, B> Eq for EcdhKem<C, T, B> {}
+    impl<C, T, B> PartialOrd for EcdhKem<C, T, B> {
         fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
             Some(self.cmp(other))
         }
     }
-    impl<C, T> Ord for EcdhKem<C, T> {
+    impl<C, T, B> Ord for EcdhKem<C, T, B> {
         fn cmp(&self, _: &Self) -> core::cmp::Ordering {
             core::cmp::Ordering::Equal
         }
     }
 
-    impl<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static> Kem for EcdhKem<C, T> {
-        type DecapsulationKey = DecapsulationKey<C, T>;
-        type EncapsulationKey = EncapsulationKey<C, T>;
+    impl<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static, B: Blinding + 'static> Kem
+        for EcdhKem<C, T, B>
+    {
+        type DecapsulationKey = DecapsulationKey<C, T, B>;
+        type EncapsulationKey = EncapsulationKey<C, T, B>;
         type SharedKeySize = C::SharedSize;
         type CiphertextSize = C::Sec1Size;
     }
 
     /// KEM encapsulation key: a peer's SEC1-uncompressed point (`0x04 || X ||
     /// Y`), also the TLS `key_share` bytes. Validated on construction.
-    pub struct EncapsulationKey<C: EcdhCurve, T> {
+    pub struct EncapsulationKey<C: EcdhCurve, T, B = Unblinded> {
         point: Array<u8, C::Sec1Size>,
-        _p: PhantomData<fn() -> T>,
+        _p: PhantomData<fn() -> (T, B)>,
     }
-    impl<C: EcdhCurve, T> Clone for EncapsulationKey<C, T> {
+    impl<C: EcdhCurve, T, B> Clone for EncapsulationKey<C, T, B> {
         fn clone(&self) -> Self {
             Self {
                 point: self.point.clone(),
@@ -2408,27 +2446,27 @@ pub mod ecdh {
             }
         }
     }
-    impl<C: EcdhCurve, T> core::fmt::Debug for EncapsulationKey<C, T> {
+    impl<C: EcdhCurve, T, B> core::fmt::Debug for EncapsulationKey<C, T, B> {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             f.debug_struct("EncapsulationKey").finish_non_exhaustive()
         }
     }
-    impl<C: EcdhCurve, T> PartialEq for EncapsulationKey<C, T> {
+    impl<C: EcdhCurve, T, B> PartialEq for EncapsulationKey<C, T, B> {
         fn eq(&self, other: &Self) -> bool {
             self.point == other.point
         }
     }
-    impl<C: EcdhCurve, T> Eq for EncapsulationKey<C, T> {}
+    impl<C: EcdhCurve, T, B> Eq for EncapsulationKey<C, T, B> {}
 
-    impl<C: EcdhCurve, T: ConstantTimeInt> KeySizeUser for EncapsulationKey<C, T> {
+    impl<C: EcdhCurve, T: ConstantTimeInt, B> KeySizeUser for EncapsulationKey<C, T, B> {
         type KeySize = C::Sec1Size;
     }
-    impl<C: EcdhCurve, T: ConstantTimeInt> KeyExport for EncapsulationKey<C, T> {
+    impl<C: EcdhCurve, T: ConstantTimeInt, B> KeyExport for EncapsulationKey<C, T, B> {
         fn to_bytes(&self) -> Key<Self> {
             self.point.clone()
         }
     }
-    impl<C: EcdhCurve, T: ConstantTimeInt> TryKeyInit for EncapsulationKey<C, T> {
+    impl<C: EcdhCurve, T: ConstantTimeInt, B> TryKeyInit for EncapsulationKey<C, T, B> {
         fn new(key: &Key<Self>) -> Result<Self, InvalidKey> {
             if validate_peer_sec1::<C, T>(key.as_slice()) {
                 Ok(Self {
@@ -2440,8 +2478,10 @@ pub mod ecdh {
             }
         }
     }
-    impl<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static> Encapsulate for EncapsulationKey<C, T> {
-        type Kem = EcdhKem<C, T>;
+    impl<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static, B: Blinding + 'static> Encapsulate
+        for EncapsulationKey<C, T, B>
+    {
+        type Kem = EcdhKem<C, T, B>;
         fn encapsulate_with_rng<R>(
             &self,
             rng: &mut R,
@@ -2450,17 +2490,22 @@ pub mod ecdh {
             R: signature::rand_core::CryptoRng + ?Sized,
         {
             // Fresh ephemeral e; ciphertext = e·G, shared = x(e·peer).
-            let eph = DecapsulationKey::<C, T>::generate_from_rng(rng);
+            let eph = DecapsulationKey::<C, T, B>::generate_from_rng(rng);
             let ct = eph.ek.point.clone();
             let mut shared = SharedKey::<Self::Kem>::default();
-            // Blind e·peer with the fresh ephemeral's own keygen blinders — a
-            // one-shot secret generated and consumed right here, so the
-            // single-use contract is exact.
+            // Under `Blinded`, blind e·peer with the fresh ephemeral's own keygen
+            // blinders — generated and consumed right here, so single-use is
+            // exact. `Unblinded` passes empty blinders.
+            let (blind, scalar_blind): (&[u8], &[u8]) = if B::BLIND {
+                (&eph.blind[..C::ELEM_BYTES], &eph.scalar_blind[..])
+            } else {
+                (&[], &[])
+            };
             let ok = ecdh_shared_x_ct::<C, T>(
                 &eph.scalar[..C::ELEM_BYTES],
                 self.point.as_slice(),
-                &eph.blind[..C::ELEM_BYTES],
-                &eph.scalar_blind[..],
+                blind,
+                scalar_blind,
                 shared.as_mut_slice(),
             );
             // `self` was validated at `TryKeyInit` and `eph` carries a valid
@@ -2473,41 +2518,44 @@ pub mod ecdh {
     }
 
     /// KEM decapsulation key: an ephemeral ECDH secret scalar. Its
-    /// [`EncapsulationKey`] is `d·G`. The scalar is zeroized on drop.
-    pub struct DecapsulationKey<C: EcdhCurve, T> {
+    /// [`EncapsulationKey`] is `d·G`. The scalar is zeroized on drop. The
+    /// [`Blinding`] personality `B` selects whether decapsulation is DPA-blinded.
+    pub struct DecapsulationKey<C: EcdhCurve, T, B = Unblinded> {
         scalar: Zeroizing<[u8; MAX_ELEM]>,
-        // Per-key DPA blinders drawn from the generation RNG and spent in
-        // `decapsulate`: coordinate λ (one field element) and scalar r (for
-        // d + r·n). This is where the `kem` lifecycle's randomness lives —
-        // `try_decapsulate` is `&self` with no RNG, so the blinder is fixed at
-        // keygen. A fixed mask reused across ciphertexts would let power traces
-        // be averaged against one constant ladder scalar and defeat the
-        // countermeasure, so reuse is *enforced* single-use via `spent` below —
-        // not merely documented. (Sound because every krabitls KX secret is
-        // ephemeral anyway: generate → one decapsulate → drop.)
+        // Per-key DPA blinders, used only under `Blinded`: coordinate λ (one
+        // field element) and scalar r (for d + r·n), drawn at keygen — the one
+        // randomness slot in the `kem` lifecycle, since `try_decapsulate` is
+        // `&self` with no RNG. Carried unconditionally rather than made a
+        // `B`-associated store to keep the generics simple (~40 bytes on an
+        // ephemeral key); zero and unread under `Unblinded`.
         blind: Zeroizing<[u8; MAX_ELEM]>,
         scalar_blind: Zeroizing<[u8; SCALAR_BLIND_BYTES]>,
-        // One-shot guard: `false` at keygen, set once by the first decapsulate.
-        // A second decapsulate finds it `true` and fails closed rather than
-        // rerunning the ladder under the same mask. Atomic (not `Cell`) so the
-        // key stays `Sync`; every target that compiles `ecdh` has atomic RMW.
+        // `Blinded` single-use guard: a fixed mask reused across ciphertexts
+        // would let power traces be averaged against one constant scalar, so the
+        // first `Blinded` decapsulate claims this and a second fails closed.
+        // Atomic (not `Cell`) so the key stays `Sync`; every target that compiles
+        // `ecdh` has atomic RMW. Unused under `Unblinded` (nothing to protect).
         spent: core::sync::atomic::AtomicBool,
-        ek: EncapsulationKey<C, T>,
+        ek: EncapsulationKey<C, T, B>,
     }
 
-    impl<C: EcdhCurve, T: ConstantTimeInt> Generate for DecapsulationKey<C, T> {
+    impl<C: EcdhCurve, T: ConstantTimeInt, B: Blinding> Generate for DecapsulationKey<C, T, B> {
         fn try_generate_from_rng<R: signature::rand_core::TryCryptoRng + ?Sized>(
             rng: &mut R,
         ) -> Result<Self, R::Error> {
             const {
                 assert!(C::ELEM_BYTES <= MAX_ELEM, "ELEM_BYTES exceeds MAX_ELEM");
-                // Exactly the field width (not just `>=`): the scalar blinder
-                // d + r·n uses the backend's widening multiply, whose limb split
-                // lands at the field boundary only at exact width (see the sign
-                // core). Every real ECDH backend already satisfies this.
+                // Under `Blinded`, the scalar blinder d + r·n uses the backend's
+                // widening multiply, whose limb split lands at the field boundary
+                // only at exact field width (see the sign core); require it there.
+                // `Unblinded` never runs that multiply, so it needs only `>=`.
                 assert!(
-                    core::mem::size_of::<T>() == C::ELEM_BYTES,
-                    "ECDH backend must be exactly the curve's field width"
+                    !B::BLIND || core::mem::size_of::<T>() == C::ELEM_BYTES,
+                    "Blinded ECDH backend must be exactly the curve's field width"
+                );
+                assert!(
+                    core::mem::size_of::<T>() >= C::ELEM_BYTES,
+                    "backend type narrower than the curve's field element"
                 );
                 assert!(
                     <C::SharedSize as Unsigned>::USIZE == C::ELEM_BYTES,
@@ -2540,15 +2588,16 @@ pub mod ecdh {
                     break;
                 }
             }
-            // Draw the DPA blinders from the same generation RNG — the standard
-            // randomness slot for the KEM lifecycle — to be spent once at
-            // decapsulate. A weak λ or r only weakens the masking, never
-            // correctness, so no rejection is needed (λ = 0 is re-guarded in the
-            // scalar mult).
+            // Under `Blinded`, draw the DPA blinders from the same generation RNG
+            // to be spent at decapsulate. A weak λ or r only weakens the masking,
+            // never correctness, so no rejection is needed (λ = 0 is re-guarded in
+            // the scalar mult). `Unblinded` skips the draws, leaving them zero.
             let mut blind = Zeroizing::new([0u8; MAX_ELEM]);
             let mut scalar_blind = Zeroizing::new([0u8; SCALAR_BLIND_BYTES]);
-            signature::rand_core::TryRng::try_fill_bytes(rng, &mut blind[..eb])?;
-            signature::rand_core::TryRng::try_fill_bytes(rng, &mut scalar_blind[..])?;
+            if B::BLIND {
+                signature::rand_core::TryRng::try_fill_bytes(rng, &mut blind[..eb])?;
+                signature::rand_core::TryRng::try_fill_bytes(rng, &mut scalar_blind[..])?;
+            }
             Ok(Self {
                 scalar,
                 blind,
@@ -2562,14 +2611,16 @@ pub mod ecdh {
         }
     }
 
-    impl<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static> Decapsulator for DecapsulationKey<C, T> {
-        type Kem = EcdhKem<C, T>;
-        fn encapsulation_key(&self) -> &EncapsulationKey<C, T> {
+    impl<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static, B: Blinding + 'static> Decapsulator
+        for DecapsulationKey<C, T, B>
+    {
+        type Kem = EcdhKem<C, T, B>;
+        fn encapsulation_key(&self) -> &EncapsulationKey<C, T, B> {
             &self.ek
         }
     }
-    impl<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static> TryDecapsulate
-        for DecapsulationKey<C, T>
+    impl<C: EcdhCurve + 'static, T: ConstantTimeInt + 'static, B: Blinding + 'static> TryDecapsulate
+        for DecapsulationKey<C, T, B>
     {
         type Error = InvalidKey;
         fn try_decapsulate(
@@ -2577,24 +2628,30 @@ pub mod ecdh {
             ct: &Ciphertext<Self::Kem>,
         ) -> Result<SharedKey<Self::Kem>, InvalidKey> {
             // Validate the (public) peer point first, non-consuming — a
-            // malformed ciphertext must not burn the one-shot blinder.
+            // malformed ciphertext must not burn a `Blinded` one-shot key.
             if !validate_peer_sec1::<C, T>(ct.as_slice()) {
                 return Err(InvalidKey);
             }
-            // Single-use: claim the key atomically before running the ladder. A
-            // second decapsulate finds it spent and refuses, rather than rerun
-            // the ladder under the same (λ, r) — which would let traces be
-            // averaged against one constant scalar and void the DPA blinding.
-            // Atomic swap gates the ladder even if `&self` is shared.
-            if self.spent.swap(true, core::sync::atomic::Ordering::Relaxed) {
-                return Err(InvalidKey);
-            }
+            // Under `Blinded`: claim the key atomically before running the ladder
+            // — a second decapsulate finds it spent and refuses, rather than
+            // rerun under the same (λ, r), which would let traces be averaged
+            // against one constant scalar and void the blinding. The swap gates
+            // the ladder even if `&self` is shared. `Unblinded` has no mask to
+            // protect, so it stays reusable and passes empty blinders.
+            let (blind, scalar_blind): (&[u8], &[u8]) = if B::BLIND {
+                if self.spent.swap(true, core::sync::atomic::Ordering::Relaxed) {
+                    return Err(InvalidKey);
+                }
+                (&self.blind[..C::ELEM_BYTES], &self.scalar_blind[..])
+            } else {
+                (&[], &[])
+            };
             let mut shared = SharedKey::<Self::Kem>::default();
             if ecdh_shared_x_ct::<C, T>(
                 &self.scalar[..C::ELEM_BYTES],
                 ct.as_slice(),
-                &self.blind[..C::ELEM_BYTES],
-                &self.scalar_blind[..],
+                blind,
+                scalar_blind,
                 shared.as_mut_slice(),
             ) {
                 Ok(shared)

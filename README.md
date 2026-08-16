@@ -32,9 +32,10 @@ the byte-limb backends and rough timing.
 
 Constant-time signing and ECDH cost more — RCB complete formulas, `FieldCt`
 arithmetic, and the RFC 6979 HMAC-SHA256 DRBG. The guarantee is timing-only;
-the randomized signer and ECDH add projective-coordinate and scalar (`k + r·n`)
-blinding against power/EM DPA. See the `signing` module docs for the full
-side-channel scope.
+the randomized signer adds projective-coordinate and scalar (`k + r·n`) blinding
+against power/EM DPA, and ECDH offers the same via an opt-in `Blinded`
+personality (the default is constant-time only). See the `signing` and `ecdh`
+module docs for the full side-channel scope.
 
 | Target | Op | Curve | .text (KiB) | Stack (bytes) |
 | ------ | -- | ----- | ----------: | ------------: |
