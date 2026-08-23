@@ -1,6 +1,6 @@
 [package]
 name = "krabiecdsa"
-version = "0.7.0"
+version = "0.8.0-alpha.1"
 edition = "2024"
 rust-version = "1.87"
 description = "ECDSA signature verification and signing for P-256, secp256k1, and P-384 — no_std, no-alloc, generic over the bigint backend via modmath"
@@ -11,7 +11,7 @@ keywords = ["ecdsa", "p256", "secp256k1", "no_std", "embedded"]
 categories = ["cryptography", "no-std", "no-std::no-alloc", "embedded"]
 
 [dependencies]
-modmath = "0.6.1"
+modmath = "0.7.0-alpha.1"
 const-num-traits = { version = "0.2.1", default-features = false, features = ["ct"] }
 signature = { version = "3.0", default-features = false, features = ["rand_core", "digest"] }
 zeroize = { version = "1", default-features = false }
@@ -34,6 +34,8 @@ ecdh = ["dep:kem"]
 # integration tests and the ct-verify harness. Signing itself is always
 # available — no feature needed.
 test-vectors = []
+# Operation-level P-256 providers for PKA peripherals and secure elements.
+accelerator = []
 
 [dev-dependencies]
 fixed-bigint = { version = "0.6.0", default-features = false, features = ["cios", "zeroize"] }
@@ -45,3 +47,6 @@ sha2 = "0.11"
 hmac = "0.13"
 digest = { version = "0.11", features = ["mac"] }
 wycheproof = { version = "0.6", default-features = false, features = ["ecdsa"] }
+
+[patch.crates-io]
+modmath = { git = "https://github.com/kaidokert/modmath-rs.git", tag = "v0.7.0-alpha.1" }

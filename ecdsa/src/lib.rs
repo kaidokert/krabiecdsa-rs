@@ -33,6 +33,9 @@
 
 pub use modmath::{FieldFor, FieldOps};
 
+#[cfg(feature = "accelerator")]
+pub mod accelerator;
+
 // The `FieldFor`/`ScalarBytes`/`ConstantTimeInt` bounds, the `Ct` backend
 // marker, and the `SchoolbookFieldRef` carrier live in these crates'
 // vocabularies, so their versions are part of this crate's public contract.
