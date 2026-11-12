@@ -38,6 +38,6 @@ scalar-blind = []
 
 [dependencies]
 krabiecdsa = { path = "../../ecdsa", default-features = false, features = ["test-vectors"] }
-fixed-bigint = { version = "0.6.0", default-features = false, features = ["cios", "zeroize"] }
+fixed-bigint = { version = "0.6.2", default-features = false, features = ["cios", "zeroize"] }
 hmac = { version = "0.13", default-features = false, optional = true }
 sha2 = { version = "0.11", default-features = false, optional = true }
