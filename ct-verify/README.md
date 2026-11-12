@@ -69,16 +69,18 @@ directory, and the toolchain CI pins in
 Cross-builds the fixture staticlib per ISA (thumbv7em/7m/6m,
 riscv32imc/imac), disassembles it, and asserts each `scalar_mul_ct`
 monomorphization carries at most the branches that control its bit loop
-and nothing more. The per-target budget is in
+and nothing more. The budget is per target and per opt-level (one
+branch at `"z"`, two on Thumb at `"s"`); see
 [`ct-driver/src/target.rs`](ct-driver/src/target.rs).
 
 At `"s"` the per-limb field loops inline into the ladder. The gate
-accepts loops over public bounds structurally: krabi-caliper's
-counted-loop model recognises their constant-step counters. The model
-cannot see where a bound came from, so the negative controls must still
-trip with it on. thumbv6m keeps a plain branch count, because its
-short-range conditional branches turn every loop branch into a
-trampoline the model cannot classify.
+accepts these loops structurally: krabi-caliper's counted-loop model
+recognises their constant-step counters. The model cannot see where a
+bound came from, so a loop with a secret-dependent bound passes this
+gate; ctgrind catches it, because the loop's exit branch reads tainted
+data. thumbv6m keeps a plain branch count, because its short-range
+conditional branches turn every loop branch into a trampoline the model
+cannot classify.
 
 The check fails unless there is exactly one ladder symbol per positive fixture (a missing one
 means a carrier's ladder was inlined/renamed and its attestation would
