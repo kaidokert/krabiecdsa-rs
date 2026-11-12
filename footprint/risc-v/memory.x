@@ -12,3 +12,6 @@ REGION_ALIAS("REGION_HEAP", RAM);
 REGION_ALIAS("REGION_STACK", RAM);
 
 _ram_length = LENGTH(RAM);
+
+/* krabi-caliper paints the stack from _sheap; riscv-rt >= 0.16 names it __sheap. */
+_sheap = __sheap;

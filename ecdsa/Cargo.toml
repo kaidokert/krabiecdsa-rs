@@ -2,7 +2,7 @@
 name = "krabiecdsa"
 version = "0.7.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.88"
 description = "ECDSA signature verification and signing for P-256, secp256k1, and P-384 — no_std, no-alloc, generic over the bigint backend via modmath"
 license = "Apache-2.0"
 readme = "../README.md"
@@ -36,7 +36,7 @@ ecdh = ["dep:kem"]
 test-vectors = []
 
 [dev-dependencies]
-fixed-bigint = { version = "0.6.0", default-features = false, features = ["cios", "zeroize"] }
+fixed-bigint = { version = "0.6.2", default-features = false, features = ["cios", "zeroize"] }
 # Heap-backed non-Copy carrier (Nct) for the verify-only non-Copy path
 # test; pinned to modmath's tag so it unifies to one `FixedWidthBigUint`.
 num-bigint = { git = "https://github.com/kaidokert/num-bigint.git", tag = "v0.4.4-const-12" }
@@ -44,4 +44,4 @@ signature = { version = "3.0", default-features = false }
 sha2 = "0.11"
 hmac = "0.13"
 digest = { version = "0.11", features = ["mac"] }
-wycheproof = { version = "0.6", default-features = false, features = ["ecdsa"] }
+wycheproof = { version = "0.7", default-features = false, features = ["ecdsa"] }
