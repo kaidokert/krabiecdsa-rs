@@ -3,8 +3,7 @@ name = "krabiecdsa-cyccnt-hardware"
 version = "0.1.0"
 edition = "2024"
 # stm32f4xx-hal (used only for the RCC 30 MHz clock config) pulls time ≥ 0.3.54,
-# whose MSRV is 1.88. This embedded campaign is separate from the host harness's
-# 1.87-pinned codegen lock.
+# whose MSRV is 1.88.
 rust-version = "1.88"
 publish = false
 
@@ -34,7 +33,7 @@ cortex-m-rt = "0.7"
 # flash ceiling); the rest of the campaign runs bare on cortex-m/cortex-m-rt.
 stm32f4xx-hal = { version = "0.22", features = ["stm32f407"] }
 krabi-caliper = { version = "=0.1.2", features = ["cortex-m-dwt", "paired", "rtt", "stack"] }
-fixed-bigint = { version = "0.6.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
+fixed-bigint = { version = "0.6.2", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
 hmac = { version = "0.13", default-features = false }
 krabiecdsa = { path = "../../ecdsa", default-features = false, features = ["test-vectors"] }
 sha2 = { version = "0.11", default-features = false }

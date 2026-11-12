@@ -18,10 +18,10 @@ limb_u8 = []
 limb_u32 = []
 
 [dependencies]
-riscv-rt = "0.13"
-krabi-caliper = { version = "0.1.0", features = ["stack", "risc-v", "uart"] }
+riscv-rt = "0.18"
+krabi-caliper = { version = "0.2.1", features = ["stack", "risc-v", "uart"] }
 
-fixed-bigint = { version = "0.6.0", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
+fixed-bigint = { version = "0.6.2", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
 krabiecdsa = { path = "../../ecdsa", default-features = false, features = ["test-vectors"] }
 
 [profile.release]

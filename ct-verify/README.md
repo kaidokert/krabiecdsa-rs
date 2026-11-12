@@ -9,8 +9,8 @@ This is a nested cargo workspace, outside the published crate (which
 lives in [`ecdsa/`](../ecdsa)). The pinned profile (`lto = "fat"`,
 `codegen-units = 1`, `opt-level = "z"`, `panic = "abort"`) in
 [`Cargo.toml`](Cargo.toml) matches what a size-conscious embedded
-deployment builds; the gates pin rustc 1.87.0 (the crate MSRV) so
-codegen drift surfaces as a reviewable diff, not silent rot.
+deployment builds. CI pins the toolchain, so a codegen change shows up
+as a gate failure on the toolchain bump.
 
 ## Scope — what is attested
 
@@ -57,7 +57,8 @@ Secret `d`/`k` are the real RFC 6979 §A.2.5/§A.2.6 scalars (validated in
 ## The three gates
 
 All commands assume this directory (`ct-verify/`) as the working
-directory, and rustc 1.87.0.
+directory, and the toolchain CI pins in
+[`ct_verify.yml`](../.github/workflows/ct_verify.yml).
 
 **Ladder branch-freedom check** ([`ct-driver`](ct-driver/)).
 Cross-builds the fixture staticlib per ISA (thumbv7em/7m/6m,
