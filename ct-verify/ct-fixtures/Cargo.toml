@@ -2,7 +2,7 @@
 name = "ct-fixtures"
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.88"
 publish = false
 description = "Constant-time fixtures pinning krabiecdsa's CT sign path for the ct-verify gates."
 

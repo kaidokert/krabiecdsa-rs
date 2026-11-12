@@ -9,8 +9,13 @@ This is a nested cargo workspace, outside the published crate (which
 lives in [`ecdsa/`](../ecdsa)). The pinned profile (`lto = "fat"`,
 `codegen-units = 1`, `opt-level = "z"`, `panic = "abort"`) in
 [`Cargo.toml`](Cargo.toml) matches what a size-conscious embedded
-deployment builds; the gates pin rustc 1.87.0 (the crate MSRV) so
-codegen drift surfaces as a reviewable diff, not silent rot.
+deployment builds. CI pins the toolchain, so a codegen change shows up
+as a gate failure on the toolchain bump.
+
+Cargo ignores a dependency's `[profile]`, so deployments pick their own
+opt-level. CI runs every gate at both `"z"` and `"s"` by setting
+`CARGO_PROFILE_RELEASE_OPT_LEVEL`; set it the same way to reproduce a
+run locally.
 
 ## Scope — what is attested
 
@@ -57,14 +62,25 @@ Secret `d`/`k` are the real RFC 6979 §A.2.5/§A.2.6 scalars (validated in
 ## The three gates
 
 All commands assume this directory (`ct-verify/`) as the working
-directory, and rustc 1.87.0.
+directory, and the toolchain CI pins in
+[`ct_verify.yml`](../.github/workflows/ct_verify.yml).
 
 **Ladder branch-freedom check** ([`ct-driver`](ct-driver/)).
 Cross-builds the fixture staticlib per ISA (thumbv7em/7m/6m,
 riscv32imc/imac), disassembles it, and asserts each `scalar_mul_ct`
-monomorphization carries at most the reviewed public loop-guard branch
-count (1 on Thumb, 2 on RV32) and nothing more. Fails closed: it
-requires exactly one ladder symbol per positive fixture (a missing one
+monomorphization carries at most the branches that control its bit loop
+and nothing more. The per-target budget is in
+[`ct-driver/src/target.rs`](ct-driver/src/target.rs).
+
+At `"s"` the per-limb field loops inline into the ladder. The gate
+accepts loops over public bounds structurally: krabi-caliper's
+counted-loop model recognises their constant-step counters. The model
+cannot see where a bound came from, so the negative controls must still
+trip with it on. thumbv6m keeps a plain branch count, because its
+short-range conditional branches turn every loop branch into a
+trampoline the model cannot classify.
+
+The check fails unless there is exactly one ladder symbol per positive fixture (a missing one
 means a carrier's ladder was inlined/renamed and its attestation would
 be vacuous), and the negative controls must trip. This is the only gate
 that inspects the Thumb/RV32 encodings that actually deploy; it runs

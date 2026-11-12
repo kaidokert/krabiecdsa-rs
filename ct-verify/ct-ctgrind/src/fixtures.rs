@@ -12,6 +12,11 @@
 //! The `r`/`s` output is untainted before we `black_box` it: an ECDSA
 //! signature is secret-*derived* but public-by-design (it is what the
 //! caller publishes), so reads of it downstream are not leaks.
+//!
+//! Fat LTO inlines the fixtures into these wrappers, so a plain `&d` to a
+//! constant or zeroed local lets the optimizer use the known value and the
+//! taint never reaches the sign path. Every secret therefore goes through
+//! [`taint_ptr`].
 
 use core::hint::black_box;
 use krabi_caliper::ctgrind_fixture;
@@ -20,6 +25,13 @@ use krabi_caliper::host::ctgrind::{taint_val, untaint_val};
 // Three synthetic detector controls (branch / equality / table-index on
 // a tainted secret) — proves memcheck still has teeth on this build.
 krabi_caliper::ctgrind_standard_controls!();
+
+/// Taint `value` and return a pointer to it the optimizer cannot trace back
+/// to the local, so the fixture loads the tainted bytes.
+fn taint_ptr<T>(value: &T) -> *const T {
+    taint_val(value);
+    black_box(value as *const T)
+}
 
 macro_rules! taint_sign_fixture {
     ($name:ident, $bytes:literal, $d:expr, $k:expr, $digest:expr) => {
@@ -38,9 +50,9 @@ macro_rules! taint_sign_fixture {
             let digest = $digest;
             let mut r = [0u8; $bytes];
             let mut s = [0u8; $bytes];
-            taint_val(&d);
-            taint_val(&k);
-            unsafe { $name(&d, &k, &digest, &mut r, &mut s) }
+            let d = taint_ptr(&d);
+            let k = taint_ptr(&k);
+            unsafe { $name(d, k, &digest, &mut r, &mut s) }
             untaint_val(&r);
             untaint_val(&s);
             let _ = black_box((r, s));
@@ -94,8 +106,8 @@ macro_rules! taint_ecdh_fixture {
             let d = $d;
             let peer = $peer;
             let mut out = [0u8; $bytes];
-            taint_val(&d);
-            unsafe { $name(&d, &peer, &mut out) }
+            let d = taint_ptr(&d);
+            unsafe { $name(d, &peer, &mut out) }
             untaint_val(&out);
             let _ = black_box(out);
         });
@@ -142,9 +154,9 @@ macro_rules! taint_blinded_fixture {
             let sblind = ct_fixtures::SBLIND;
             let mut r = [0u8; $bytes];
             let mut s = [0u8; $bytes];
-            taint_val(&d);
-            taint_val(&k);
-            unsafe { $name(&d, &k, &digest, &lambda, &sblind, &mut r, &mut s) }
+            let d = taint_ptr(&d);
+            let k = taint_ptr(&k);
+            unsafe { $name(d, k, &digest, &lambda, &sblind, &mut r, &mut s) }
             untaint_val(&r);
             untaint_val(&s);
             let _ = black_box((r, s));
@@ -191,8 +203,8 @@ macro_rules! taint_det_fixture {
             let digest = $digest;
             let mut r = [0u8; $bytes];
             let mut s = [0u8; $bytes];
-            taint_val(&d);
-            unsafe { $name(&d, &digest, &mut r, &mut s) }
+            let d = taint_ptr(&d);
+            unsafe { $name(d, &digest, &mut r, &mut s) }
             untaint_val(&r);
             untaint_val(&s);
             let _ = black_box((r, s));
@@ -234,8 +246,8 @@ macro_rules! taint_hedged_fixture {
             let added = ct_fixtures::ADDED; // public, not tainted
             let mut r = [0u8; $bytes];
             let mut s = [0u8; $bytes];
-            taint_val(&d);
-            unsafe { $name(&d, &digest, &added, &mut r, &mut s) }
+            let d = taint_ptr(&d);
+            unsafe { $name(d, &digest, &added, &mut r, &mut s) }
             untaint_val(&r);
             untaint_val(&s);
             let _ = black_box((r, s));
@@ -266,24 +278,24 @@ unsafe extern "C" {
 ctgrind_fixture!(nct_fix__neg__secret_branch__p256, {
     let s = [0u8; 32];
     let mut out = 0u8;
-    taint_val(&s);
-    unsafe { nct_fix__neg__secret_branch__p256(&s, &mut out) }
+    let s = taint_ptr(&s);
+    unsafe { nct_fix__neg__secret_branch__p256(s, &mut out) }
     untaint_val(&out);
     let _ = black_box(out);
 });
 ctgrind_fixture!(nct_fix__neg__vartime_cmp__p256, {
     let s = [0u8; 32];
     let mut out = 0u8;
-    taint_val(&s);
-    unsafe { nct_fix__neg__vartime_cmp__p256(&s, &mut out) }
+    let s = taint_ptr(&s);
+    unsafe { nct_fix__neg__vartime_cmp__p256(s, &mut out) }
     untaint_val(&out);
     let _ = black_box(out);
 });
 ctgrind_fixture!(nct_fix__neg__vartime_serialize__p256, {
     let s = [0u8; 32];
     let mut out = 0u8;
-    taint_val(&s);
-    unsafe { nct_fix__neg__vartime_serialize__p256(&s, &mut out) }
+    let s = taint_ptr(&s);
+    unsafe { nct_fix__neg__vartime_serialize__p256(s, &mut out) }
     untaint_val(&out);
     let _ = black_box(out);
 });

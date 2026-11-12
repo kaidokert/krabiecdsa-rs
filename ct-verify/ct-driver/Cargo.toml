@@ -2,7 +2,7 @@
 name = "ct-driver"
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.88"
 publish = false
 description = "Cross-target disassembly + branch-grep driver for krabiecdsa's CT sign ladder."
 
@@ -11,4 +11,4 @@ name = "ct-driver"
 path = "src/main.rs"
 
 [dependencies]
-krabi-caliper = { version = "=0.1.2", features = ["host"] }
+krabi-caliper = { version = "0.2.1", features = ["host"] }
