@@ -18,7 +18,7 @@ limb_u8 = []
 limb_u32 = []
 
 [dependencies]
-riscv-rt = "0.13"
+riscv-rt = "0.18"
 krabi-caliper = { version = "0.2.1", features = ["stack", "risc-v", "uart"] }
 
 fixed-bigint = { version = "0.6.2", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }

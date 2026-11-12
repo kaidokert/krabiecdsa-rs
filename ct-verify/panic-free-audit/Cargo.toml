@@ -2,7 +2,7 @@
 name = "panic-free-audit"
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.88"
 publish = false
 description = "Linker-DCE audit: confirm krabiecdsa's CT sign path synthesizes no panic symbols."
 
@@ -28,7 +28,7 @@ deterministic = ["dep:hmac", "dep:sha2"]
 
 [dependencies]
 krabiecdsa = { path = "../../ecdsa", default-features = false, features = ["test-vectors"] }
-fixed-bigint = { version = "0.6.0", default-features = false, features = ["cios", "zeroize"] }
+fixed-bigint = { version = "0.6.2", default-features = false, features = ["cios", "zeroize"] }
 hmac = { version = "0.13", default-features = false, optional = true }
 sha2 = { version = "0.11", default-features = false, optional = true }
 
