@@ -27,8 +27,13 @@ jobs:
       with:
         targets: riscv32imac-unknown-none-elf
 
+    # Ubuntu 26.04 ships qemu-system-riscv32 in its own package; older
+    # images carry it in qemu-system-misc.
     - name: Install QEMU
-      run: sudo apt-get update && sudo apt-get install -y qemu-system-misc
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-riscv || sudo apt-get install -y qemu-system-misc
+        qemu-system-riscv32 --version
 
     - name: Install krabi-caliper host tooling
       run: cargo install krabi-caliper --version 0.2.1 --features cli,campaign
