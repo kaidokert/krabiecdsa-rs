@@ -426,8 +426,10 @@ pub unsafe extern "C" fn nct_fix__neg__vartime_cmp__p256(s_ptr: *const [u8; 32],
 /// class the CT `to_be_ct` exists to prevent, which a suppressed sign
 /// frame must never be allowed to hide.
 ///
-/// The set-bit path does a `write_volatile` so the branch survives
-/// optimization — a plain accumulate folds to a branch-free byte copy.
+/// The set-bit path goes through `black_box` so the branch survives
+/// optimization: a plain accumulate folds to a branch-free byte copy, and
+/// a `write_volatile` is if-converted into an IT-predicated store on
+/// Thumb-2, leaving only the public loop counter to branch on.
 ///
 /// # Safety
 /// `s_ptr` must be a valid, aligned pointer to a 32-byte array;
@@ -442,7 +444,7 @@ pub unsafe extern "C" fn nct_fix__neg__vartime_serialize__p256(
     let mut b = 0u8;
     for j in 0..8 {
         if acc & 1 != 0 {
-            unsafe { core::ptr::write_volatile(&mut b, b | (1 << j)) };
+            b = black_box(b | (1 << j));
         }
         acc >>= 1;
     }

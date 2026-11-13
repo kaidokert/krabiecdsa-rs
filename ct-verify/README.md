@@ -1,90 +1,82 @@
 # Constant-time verification harness
 
-Machine-checked evidence for krabiecdsa's experimental constant-time
-sign path. Three gates, each answering a question the others can't, all
-pinned to one toolchain and one release profile so a passing run "locks"
-specific machine code rather than an optimizer's mood.
+Checks for the constant-time and panic-free claims of krabiecdsa's
+experimental signing and ECDH paths, in four layers.
 
-This is a nested cargo workspace, outside the published crate (which
-lives in [`ecdsa/`](../ecdsa)). The pinned profile (`lto = "fat"`,
-`codegen-units = 1`, `opt-level = "z"`, `panic = "abort"`) in
-[`Cargo.toml`](Cargo.toml) matches what a size-conscious embedded
-deployment builds. CI pins the toolchain, so a codegen change shows up
-as a gate failure on the toolchain bump.
+This is a nested cargo workspace, outside the published crate in
+[`ecdsa/`](../ecdsa). Its release profile in [`Cargo.toml`](Cargo.toml)
+is `lto = "fat"`, `codegen-units = 1`, `opt-level = "z"`,
+`panic = "abort"`. CI pins the toolchain, so codegen changes arrive only
+with a toolchain bump.
 
-## Scope — what is attested
+Cargo ignores a dependency's `[profile]`, so a deployment picks its own
+opt-level. CI runs every layer at both `"z"` and `"s"` by setting
+`CARGO_PROFILE_RELEASE_OPT_LEVEL`; set it the same way locally.
 
-Two sign entry points, both constant-time:
+## What the fixtures cover
 
-- **`sign_prehashed_ct_with_k`** — the RCB scalar-multiply sign given a
-  nonce: the constant-time range checks (`ct_is_zero`/`ct_lt` on `d` and
-  `k`), the branchless double-and-add-always ladder (`scalar_mul_ct` over
-  homogeneous projective coordinates with RCB complete addition), `k⁻¹`,
-  and the `s = k⁻¹(z + r·d)` combination — all on the `FieldCt` surface.
-- **`sign_prehashed_ct`** — the *full* RFC 6979 deterministic sign:
-  the above, plus the nonce derivation. The derivation's HMAC-DRBG is
-  data-oblivious (SHA-2/HMAC branch on neither key nor message) and its
-  candidate range check runs on `subtle`'s constant-time comparisons, so
-  the whole deterministic sign is constant-time **up to RFC 6979's
-  inherent rejection-loop count** — reject probability ~2⁻³² for these
-  curves, effectively always one iteration, revealing negligible
-  information about the key. That one signal is a documented
-  declassification (see the ctgrind [suppressions](ct-ctgrind/ct-ctgrind.supp)).
-- **`sign_prehashed_ct_hedged`** — the hedged deterministic sign
-  (`RandomizedSigningKey`): identical to `sign_prehashed_ct` but with RFC
-  6979 §3.6 additional data (`added`) folded into the DRBG seed. `added`
-  is public (never tainted), so the same constant-time property holds; the
-  fixtures pin the §3.6 plumbing taint- and panic-clean. The
-  verify-after-sign layer is *not* covered here — it runs variable-time on
-  the public `(r, s)`, so it is not part of the CT surface.
+Each fixture calls one public entry point in `krabiecdsa::signing`:
+- `sign_prehashed_ct_with_k`: sign with a given nonce.
+- `sign_prehashed_ct`: RFC 6979 deterministic sign.
+- `sign_prehashed_ct_hedged`: RFC 6979 with §3.6 additional data.
+- `sign_prehashed_ct_with_k_blinded`: sign with coordinate and scalar
+  blinding.
+- `ecdh_diffie_hellman_ct`: ECDH agreement.
 
-Every fixture reaches the CT surface through the public API — no
-krabiecdsa source is instrumented. The gates verify *fixture
-instantiations, not generic code*, so the matrix covers each shipped
-carrier flavor at the curve's field width:
+`d` and `k` are the secrets, set to the RFC 6979 §A.2.5/§A.2.6 scalars
+so the code under test is the successful sign path. The digest, peer
+point, additional data and blinds are public.
 
-| fixture suffix | curve | limbs | deployment shape |
-| -------------- | ----- | ----- | ---------------- |
+The with-nonce sign has one fixture per carrier at the width it ships at:
+
+| fixture suffix | curve | limbs | used for |
+| -------------- | ----- | ----- | -------- |
 | `p256__fb32`   | P-256 | `u32` | Cortex-M / RISC-V |
 | `p256__fb8`    | P-256 | `u8`  | AVR-class |
 | `p256__fb64`   | P-256 | `u64` | 64-bit hosts |
 | `p384__fb32`   | P-384 | `u32` | Cortex-M / RISC-V |
 
-Secret `d`/`k` are the real RFC 6979 §A.2.5/§A.2.6 scalars (validated in
-[`ecdsa/tests/rfc6979.rs`](../ecdsa/tests/rfc6979.rs)), so the sign
-*happy path* is the code under inspection rather than an early return.
+The other entry points have P-256 and P-384 fixtures on `u32` limbs; the
+panic audit also builds the deterministic sign on `u8`. They share the
+with-nonce `scalar_mul_ct` instances, so the ladder check does not build
+them.
 
-## The three gates
+## Layers
 
-All commands assume this directory (`ct-verify/`) as the working
-directory, and the toolchain CI pins in
-[`ct_verify.yml`](../.github/workflows/ct_verify.yml).
+Commands run from this directory.
 
-**Ladder branch-freedom check** ([`ct-driver`](ct-driver/)).
-Cross-builds the fixture staticlib per ISA (thumbv7em/7m/6m,
-riscv32imc/imac), disassembles it, and asserts each `scalar_mul_ct`
-monomorphization carries at most the reviewed public loop-guard branch
-count (1 on Thumb, 2 on RV32) and nothing more. Fails closed: it
-requires exactly one ladder symbol per positive fixture (a missing one
-means a carrier's ladder was inlined/renamed and its attestation would
-be vacuous), and the negative controls must trip. This is the only gate
-that inspects the Thumb/RV32 encodings that actually deploy; it runs
-anywhere (no Valgrind).
+**Ladder branch check** ([`ct-driver`](ct-driver/)). Cross-builds the
+fixtures for thumbv7em, thumbv7m, thumbv6m, riscv32imc and riscv32imac,
+disassembles them, and checks that each `scalar_mul_ct` instance has
+only the branches of its loop over the scalar's public bit width. The
+per-target, per-opt-level budgets are in
+[`ct-driver/src/target.rs`](ct-driver/src/target.rs).
+
+At `"s"` the per-limb field loops are inlined into the ladder, and
+krabi-caliper's counted-loop model accepts them by their constant-step
+counters. The model cannot tell where a bound came from, so a loop with
+a secret bound passes this check (see the last gap). thumbv6m uses a
+plain branch count, because its short-range branches turn loop branches
+into trampolines the model cannot classify.
+
+The check fails if a ladder symbol is missing, because an inlined or
+renamed ladder would otherwise pass unchecked. It also fails if one of
+the `nct_fix__neg__*` controls in `ct-fixtures` is not reported:
+- `secret_branch`: a loop that exits on a secret byte.
+- `vartime_cmp`: an early-exit compare.
+- `vartime_serialize`: a serializer that branches on secret bits.
 
 ```sh
 cargo run --release -p ct-driver -- --target thumbv7m-none-eabi
 ```
 
-**Taint (ctgrind) — the primary whole-operation gate**
-([`ct-ctgrind`](ct-ctgrind/)). Marks the secret `d` (and `k`, for the
-with-nonce fixtures) undefined via crabgrind; Valgrind memcheck then
-flags any conditional jump or memory access that depends on them,
-through every inlined dependency, across the whole sign — including the
-deterministic fixtures that derive the nonce internally. Runs on
-x86_64/aarch64 **Linux only** — on macOS use the
-[Dockerfile](ct-ctgrind/Dockerfile). Negative controls (a
-secret-dependent early-exit loop, a vartime compare, and three synthetic
-detector controls) must trip.
+**Taint gate** ([`ct-ctgrind`](ct-ctgrind/)). This is the main check
+over whole operations. krabi-caliper marks the secrets undefined and
+Valgrind memcheck reports any conditional jump or memory address that
+depends on them. Linux x86_64 and aarch64 only; on macOS use the
+[Dockerfile](ct-ctgrind/Dockerfile). Six negative controls must be
+reported: krabi-caliper's standard branch, equality and index controls,
+and the three ladder-check controls.
 
 ```sh
 cargo build --release -p ct-ctgrind
@@ -92,57 +84,45 @@ cargo krabi-caliper ctgrind target/release/ct-ctgrind \
   --valgrind-arg=--suppressions=ct-ctgrind/ct-ctgrind.supp
 ```
 
-Suppressions ([`ct-ctgrind.supp`](ct-ctgrind/ct-ctgrind.supp)) are
-individually reviewed declassifications, not blanket: the public
-pass/fail outcomes of the sign, RFC 6979's rejection-loop count, and
-data-oblivious `memcpy` shadow-propagation artifacts. Their soundness
-rests on the CT primitives being separate symbols (`scalar_mul_ct` and
-`add_rcb` carry `#[inline(never)]` for exactly this) — a real leak in
-the branchless crypto path surfaces at its own symbol, matched by no
-entry. Verify with `nm libct_fixtures.a | grep scalar_mul_ct`.
+[`ct-ctgrind.supp`](ct-ctgrind/ct-ctgrind.supp) suppresses two things,
+each with its reasoning in the file:
+- The exit branch of RFC 6979's candidate loop in `rfc6979_nonce`. A
+  candidate is rejected with probability about 2⁻³².
+- Valgrind's imprecise tracking through `memcpy`.
+
+`Addr` errors are never suppressed. The harness untaints `r`/`s` and the
+ECDH output after each call, since they are published.
 
 **Panic-free audit** ([`panic-free-audit`](panic-free-audit/)).
-Cross-builds the sign as a DCE'd staticlib and asserts via `llvm-nm`
-that no `core::panicking` machinery was linked. For a signer a reachable
-panic is both a DoS edge and a timing oracle (panic formatting cost
-depends on the values formatted). Two legs, no Valgrind:
+Cross-builds every entry point with unused code removed and checks with
+`llvm-nm` that no `core::panicking` code was linked. A reachable panic
+in a signer is a denial-of-service path and a timing signal.
 
 ```sh
-# with-nonce sign — strict: the whole path incl. deps must be panic-free
 cargo krabi-caliper panic-audit --workspace . --package panic-free-audit \
   --target thumbv7m-none-eabi --features panic-handler \
   --negative-features neg-controls --owned-symbol '.*' \
   --expect-negative panic_audit__neg__bounds_check \
   --expect-negative panic_audit__neg__unwrap \
   --expect-negative panic_audit__neg__expect
-
-# deterministic sign — crate-owned scope (see gaps re: hmac/sha2)
-cargo krabi-caliper panic-audit --workspace . --package panic-free-audit \
-  --target thumbv7m-none-eabi --features panic-handler \
-  --cargo-arg=--features=deterministic \
-  --negative-features neg-controls --owned-symbol 'krabiecdsa|panic_audit__' \
-  --expect-negative panic_audit__neg__bounds_check \
-  --expect-negative panic_audit__neg__unwrap \
-  --expect-negative panic_audit__neg__expect
 ```
+
+The second leg adds `--cargo-arg=--features=deterministic` and narrows
+`--owned-symbol` to `'krabiecdsa|panic_audit__'`; see the first gap.
+
+**Hardware cycle counts** ([`cyccnt-hardware`](cyccnt-hardware/)).
+Compares DWT cycle counts for two private keys on a J-Trace STM32F407VG
+with a Welch t-test. See its [README](cyccnt-hardware/README.md).
 
 ## Known gaps
 
-- **The RFC 6979 DRBG's upstream deps are out of the panic-free scope.**
-  The deterministic sign pulls in RustCrypto `hmac`/`sha2`, whose block
-  buffering carries its own reachable `copy_from_slice`/slice-index panic
-  branches. krabiecdsa's *own* derivation byte-plumbing is panic-free
-  (the deterministic leg audits crate-owned symbols and passes); the
-  upstream branches are deferred, not fixed here — the same
-  upstream-triage stance the with-nonce leg's strict `.*` audit applies
-  to fixed-bigint/modmath. RFC 6979 can't avoid `sha2` — the HMAC *is*
-  the DRBG.
-- **Branchless selects on secrets are invisible to taint.** memcheck
-  flags conditional *jumps* and addresses, not `csel`/`cmov` data flow.
-  The ladder gate partially compensates by counting every conditional
-  branch in `scalar_mul_ct`; a secret-dependent select elsewhere would
-  evade both. Inherent to the tool class until symbolic-execution
-  tooling (cargo-checkct / binsec) is adopted.
-- **Taint runs on host ISAs** (x86_64, aarch64), not the Thumb/RV32
-  encodings that deploy. The ladder gate covers those encodings for the
-  scalar multiply only.
+- **`hmac`/`sha2` are outside the deterministic leg's audit scope.**
+  Their block buffering has reachable panics. krabiecdsa's own RFC 6979
+  code passes; the HMAC is the DRBG, so `sha2` cannot be dropped.
+- **Taint does not see branchless selects** (`csel`/`cmov`) on secrets.
+  The ladder check counts branches in `scalar_mul_ct` only, so a
+  secret-dependent select elsewhere passes both.
+- **Taint runs on host ISAs**, not the Thumb or RV32 code that ships.
+  The ladder check covers those targets for the scalar multiply only.
+- **No negative control has a secret loop bound**, so the taint gate's
+  handling of one is untested here.

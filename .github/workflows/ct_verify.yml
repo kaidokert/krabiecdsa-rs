@@ -14,19 +14,25 @@ env:
   CARGO_TERM_COLOR: always
   # krabi-caliper CLI version (published on crates.io) — one source of
   # truth for the gates.
-  CALIPER_VERSION: "0.1.2"
+  CALIPER_VERSION: "0.2.1"
 
 jobs:
   # Assembly-ladder branch-freedom gate: cross-build the fixture
   # staticlib per ISA, disassemble, assert scalar_mul_ct is branch-free.
   # No Valgrind — inspects the encodings that actually deploy.
   ladder:
+    name: ladder (${{ matrix.target }}, opt ${{ matrix.opt }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: ${{ matrix.opt }}
     strategy:
       fail-fast: false
       matrix:
+        # "z" is the pinned profile; deployments commonly build at "s",
+        # where the per-limb field loops inline into the ladder.
+        opt: ["s", "z"]
         target:
           - thumbv7em-none-eabi
           - thumbv7m-none-eabi
@@ -55,12 +61,16 @@ jobs:
   # Panic-free DCE audit: cross-build the sign as a staticlib, assert
   # llvm-nm finds no core::panicking. No Valgrind.
   panic-audit:
+    name: panic-audit (${{ matrix.target }}, opt ${{ matrix.opt }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: ${{ matrix.opt }}
     strategy:
       fail-fast: false
       matrix:
+        opt: ["s", "z"]
         target:
           - thumbv7em-none-eabi
           - thumbv7m-none-eabi
@@ -117,9 +127,15 @@ jobs:
   # (Valgrind). x86_64 pins the CI CPU baseline; aarch64 covers the
   # other host encoding.
   ctgrind:
+    name: ctgrind (${{ matrix.runs-on }}, opt ${{ matrix.opt }})
+    env:
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: ${{ matrix.opt }}
     strategy:
       fail-fast: false
       matrix:
+        # "z" is the pinned profile; deployments commonly build at "s".
+        opt: ["s", "z"]
+        runs-on: [ubuntu-latest, ubuntu-24.04-arm]
         include:
           - runs-on: ubuntu-latest
             rustflags: "-C target-feature=+lzcnt,+bmi1"

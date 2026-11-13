@@ -32,7 +32,7 @@ cortex-m-rt = "0.7"
 # Used only to program the RCC for a 30 MHz sysclk (the F407's 0-wait-state
 # flash ceiling); the rest of the campaign runs bare on cortex-m/cortex-m-rt.
 stm32f4xx-hal = { version = "0.22", features = ["stm32f407"] }
-krabi-caliper = { version = "=0.1.2", features = ["cortex-m-dwt", "paired", "rtt", "stack"] }
+krabi-caliper = { version = "=0.2.1", features = ["cortex-m-dwt", "paired", "rtt", "stack"] }
 fixed-bigint = { version = "0.6.2", default-features = false, features = ["zeroize", "use-unsafe", "cios"] }
 hmac = { version = "0.13", default-features = false }
 krabiecdsa = { path = "../../ecdsa", default-features = false, features = ["test-vectors"] }
