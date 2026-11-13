@@ -3,7 +3,8 @@
 Checks for the constant-time and panic-free claims of krabiecdsa's
 experimental signing and ECDH paths, in four layers.
 
-This is a nested cargo workspace, outside the published crate. Its
+This is a nested cargo workspace, outside the published crate in
+[`ecdsa/`](../ecdsa). Its
 release profile in [`Cargo.toml`](Cargo.toml) is `lto = "fat"`,
 `codegen-units = 1`, `opt-level = "z"`, `panic = "abort"`. CI pins the
 toolchain, so a codegen change shows up as a gate failure.
@@ -15,10 +16,15 @@ opt-level. CI runs every layer at both `"z"` and `"s"` by setting
 ## What the fixtures cover
 
 Each fixture calls one public entry point in `krabiecdsa::signing`:
-`sign_prehashed_ct_with_k`, `sign_prehashed_ct` (RFC 6979),
-`sign_prehashed_ct_hedged` (RFC 6979 §3.6), `sign_prehashed_ct_with_k_blinded`
-and `ecdh_diffie_hellman_ct`. The secrets `d` and `k` are tainted; the
-digest, peer point, hedge data and blinds are public.
+- `sign_prehashed_ct_with_k`: sign with a given nonce.
+- `sign_prehashed_ct`: RFC 6979 deterministic sign.
+- `sign_prehashed_ct_hedged`: RFC 6979 with §3.6 additional data.
+- `sign_prehashed_ct_with_k_blinded`: sign with coordinate and scalar
+  blinding.
+- `ecdh_diffie_hellman_ct`: ECDH agreement.
+
+`d` and `k` are the secrets. The digest, peer point, additional data
+and blinds are public.
 
 The with-nonce sign has one fixture per carrier at the width it ships at:
 
@@ -54,9 +60,12 @@ is left to the taint gate. thumbv6m uses a plain branch count, because
 its short-range branches turn loop branches into trampolines the model
 cannot classify.
 
-The check fails if a ladder symbol is missing (an inlined or renamed
-ladder would otherwise pass unchecked) or if one of its three negative
-controls is not reported.
+The check fails if a ladder symbol is missing, because an inlined or
+renamed ladder would otherwise pass unchecked. It also fails if one of
+the `nct_fix__neg__*` controls in `ct-fixtures` is not reported:
+- `secret_branch`: a loop that exits on a secret byte.
+- `vartime_cmp`: an early-exit compare.
+- `vartime_serialize`: a serializer that branches on secret bits.
 
 ```sh
 cargo run --release -p ct-driver -- --target thumbv7m-none-eabi
@@ -67,7 +76,8 @@ operations. krabi-caliper marks the secrets undefined and Valgrind
 memcheck reports any conditional jump or memory address that depends on
 them. Linux x86_64 and aarch64 only; on macOS use the
 [Dockerfile](ct-ctgrind/Dockerfile). Six negative controls must be
-reported.
+reported: krabi-caliper's standard branch, equality and index controls,
+and the three ladder-check controls.
 
 ```sh
 cargo build --release -p ct-ctgrind
@@ -76,10 +86,12 @@ cargo krabi-caliper ctgrind target/release/ct-ctgrind \
 ```
 
 [`ct-ctgrind.supp`](ct-ctgrind/ct-ctgrind.supp) suppresses two things,
-each with its reasoning in the file: the exit branch of RFC 6979's
-candidate loop (a rejection has probability about 2⁻³²), and Valgrind's
-imprecise tracking through `memcpy`. `Addr` errors are never
-suppressed. The harness untaints `r`/`s` and the ECDH output after each
+each with its reasoning in the file:
+- The exit branch of RFC 6979's candidate loop in `rfc6979_nonce`. A
+  candidate is rejected with probability about 2⁻³².
+- Valgrind's imprecise tracking through `memcpy`.
+
+`Addr` errors are never suppressed. The harness untaints `r`/`s` and the ECDH output after each
 call, since they are published.
 
 **Panic-free audit** ([`panic-free-audit`](panic-free-audit/)).
@@ -105,8 +117,8 @@ with a Welch t-test. See its [README](cyccnt-hardware/README.md).
 
 ## Known gaps
 
-- **`hmac`/`sha2` are outside the panic audit.** Their block buffering
-  has reachable panics. krabiecdsa's own RFC 6979 code passes; the HMAC
+- **`hmac`/`sha2` are outside the deterministic leg's audit scope.**
+  Their block buffering has reachable panics. krabiecdsa's own RFC 6979 code passes; the HMAC
   is the DRBG, so `sha2` cannot be dropped.
 - **Taint does not see branchless selects** (`csel`/`cmov`) on secrets.
   The ladder check counts branches in `scalar_mul_ct` only, so a
