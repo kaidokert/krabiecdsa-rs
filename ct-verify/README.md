@@ -4,10 +4,10 @@ Checks for the constant-time and panic-free claims of krabiecdsa's
 experimental signing and ECDH paths, in four layers.
 
 This is a nested cargo workspace, outside the published crate in
-[`ecdsa/`](../ecdsa). Its
-release profile in [`Cargo.toml`](Cargo.toml) is `lto = "fat"`,
-`codegen-units = 1`, `opt-level = "z"`, `panic = "abort"`. CI pins the
-toolchain, so a codegen change shows up as a gate failure.
+[`ecdsa/`](../ecdsa). Its release profile in [`Cargo.toml`](Cargo.toml)
+is `lto = "fat"`, `codegen-units = 1`, `opt-level = "z"`,
+`panic = "abort"`. CI pins the toolchain, so codegen changes arrive only
+with a toolchain bump.
 
 Cargo ignores a dependency's `[profile]`, so a deployment picks its own
 opt-level. CI runs every layer at both `"z"` and `"s"` by setting
@@ -23,8 +23,9 @@ Each fixture calls one public entry point in `krabiecdsa::signing`:
   blinding.
 - `ecdh_diffie_hellman_ct`: ECDH agreement.
 
-`d` and `k` are the secrets. The digest, peer point, additional data
-and blinds are public.
+`d` and `k` are the secrets, set to the RFC 6979 §A.2.5/§A.2.6 scalars
+so the code under test is the successful sign path. The digest, peer
+point, additional data and blinds are public.
 
 The with-nonce sign has one fixture per carrier at the width it ships at:
 
@@ -35,12 +36,10 @@ The with-nonce sign has one fixture per carrier at the width it ships at:
 | `p256__fb64`   | P-256 | `u64` | 64-bit hosts |
 | `p384__fb32`   | P-384 | `u32` | Cortex-M / RISC-V |
 
-The other entry points have P-256 and P-384 fixtures on `u32` limbs.
-They share the with-nonce `scalar_mul_ct` instances, so only the taint
-gate and the panic audit build them.
-
-`d` and `k` are the RFC 6979 §A.2.5/§A.2.6 scalars, so the code under
-test is the successful sign path.
+The other entry points have P-256 and P-384 fixtures on `u32` limbs; the
+panic audit also builds the deterministic sign on `u8`. They share the
+with-nonce `scalar_mul_ct` instances, so the ladder check does not build
+them.
 
 ## Layers
 
@@ -55,10 +54,10 @@ per-target, per-opt-level budgets are in
 
 At `"s"` the per-limb field loops are inlined into the ladder, and
 krabi-caliper's counted-loop model accepts them by their constant-step
-counters. The model cannot tell where a bound came from; a secret bound
-is left to the taint gate. thumbv6m uses a plain branch count, because
-its short-range branches turn loop branches into trampolines the model
-cannot classify.
+counters. The model cannot tell where a bound came from, so a loop with
+a secret bound passes this check (see the last gap). thumbv6m uses a
+plain branch count, because its short-range branches turn loop branches
+into trampolines the model cannot classify.
 
 The check fails if a ladder symbol is missing, because an inlined or
 renamed ladder would otherwise pass unchecked. It also fails if one of
@@ -71,10 +70,10 @@ the `nct_fix__neg__*` controls in `ct-fixtures` is not reported:
 cargo run --release -p ct-driver -- --target thumbv7m-none-eabi
 ```
 
-**Taint gate** ([`ct-ctgrind`](ct-ctgrind/)). The main check over whole
-operations. krabi-caliper marks the secrets undefined and Valgrind
-memcheck reports any conditional jump or memory address that depends on
-them. Linux x86_64 and aarch64 only; on macOS use the
+**Taint gate** ([`ct-ctgrind`](ct-ctgrind/)). This is the main check
+over whole operations. krabi-caliper marks the secrets undefined and
+Valgrind memcheck reports any conditional jump or memory address that
+depends on them. Linux x86_64 and aarch64 only; on macOS use the
 [Dockerfile](ct-ctgrind/Dockerfile). Six negative controls must be
 reported: krabi-caliper's standard branch, equality and index controls,
 and the three ladder-check controls.
@@ -91,8 +90,8 @@ each with its reasoning in the file:
   candidate is rejected with probability about 2⁻³².
 - Valgrind's imprecise tracking through `memcpy`.
 
-`Addr` errors are never suppressed. The harness untaints `r`/`s` and the ECDH output after each
-call, since they are published.
+`Addr` errors are never suppressed. The harness untaints `r`/`s` and the
+ECDH output after each call, since they are published.
 
 **Panic-free audit** ([`panic-free-audit`](panic-free-audit/)).
 Cross-builds every entry point with unused code removed and checks with
@@ -118,8 +117,8 @@ with a Welch t-test. See its [README](cyccnt-hardware/README.md).
 ## Known gaps
 
 - **`hmac`/`sha2` are outside the deterministic leg's audit scope.**
-  Their block buffering has reachable panics. krabiecdsa's own RFC 6979 code passes; the HMAC
-  is the DRBG, so `sha2` cannot be dropped.
+  Their block buffering has reachable panics. krabiecdsa's own RFC 6979
+  code passes; the HMAC is the DRBG, so `sha2` cannot be dropped.
 - **Taint does not see branchless selects** (`csel`/`cmov`) on secrets.
   The ladder check counts branches in `scalar_mul_ct` only, so a
   secret-dependent select elsewhere passes both.
